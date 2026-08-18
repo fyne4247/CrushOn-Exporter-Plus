@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         CrushOn Chat Exporter
-// @namespace    co-export
-// @version      1.6.0
-// @description  Capture CrushOn chats with [user]/[ai] labels. Export TXT/HTML. Stable on Firefox Android and PC.
+// @name         CrushOn Exporter PLUS (card export)
+// @namespace    co-export-plus
+// @version      1.7.0
+// @description  Capture CrushOn chats with [user]/[ai] labels. Export TXT/HTML, plus SillyTavern-compatible character card .png. Stable on Firefox Android and PC.
 // @match        *://*.crushon.ai/*
 // @match        https://crushon.ai/*
 // @match        https://www.crushon.ai/*
@@ -11,6 +11,8 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_download
+// @grant        GM_xmlhttpRequest
+// @connect      *
 // ==/UserScript==
 
 (function () {
@@ -213,7 +215,7 @@
     tab.onclick=()=>{ const b=$('#coBox'), h=$('#coHUD'); if(b){ b.dataset.minimized='0'; b.style.display=''; } if(h){ h.dataset.minimized='0'; h.style.display = HUD_ENABLED ? '' : 'none'; } tab.style.display='none'; };
 
     // Menus
-    const mExp=el('div',{id:'coMenuExport',class:'coMenu'}); mExp.append(mk('Export .txt',exportTxt), mk('Export .html',exportHTML)); document.body.appendChild(mExp);
+    const mExp=el('div',{id:'coMenuExport',class:'coMenu'}); mExp.append(mk('Export .txt',exportTxt), mk('Export .html',exportHTML), mk('Export character .png',exportCharacterPNG)); document.body.appendChild(mExp);
     const mTools=el('div',{id:'coMenuTools',class:'coMenu'});
 
     // Toggle status bar
@@ -226,7 +228,8 @@
     const btnCal = mk('Calibrate speakers', manualCalibrate);
     const btnResize = mk('Resize UI…', showResizeUI);
     const btnHelp = mk('Read me', ()=>{ const h=$('#coHelp'); h.style.display='block'; closeMenus(); restorePosOrCenter('co_pos_help', h); });
-    mTools.append(btnHudToggle, btnClear, btnCal, btnResize, btnHelp); document.body.appendChild(mTools);
+    const btnProbe = mk('Probe character data', probeCharacterData);
+    mTools.append(btnHudToggle, btnClear, btnCal, btnResize, btnProbe, btnHelp); document.body.appendChild(mTools);
 
     // Help + Prompt
     document.body.appendChild(buildHelp());
@@ -280,6 +283,7 @@
       <div style="padding:12px 14px;font:13px/1.55 system-ui,-apple-system,Segoe UI,Roboto,Arial">
         <p><b>Capture now:</b> Auto-calibrates for [user]/[ai] labels.</p>
         <p><b>Export:</b> Save .txt or .html with [user]/[ai] labels.</p>
+        <p><b>Export character .png:</b> Saves the character as a SillyTavern v2 card (JSON embedded in their avatar PNG). Works on public profiles and on characters you own; private characters that aren't yours are blocked.</p>
         <p><b>Calibrate speakers:</b> Manual function as fallback if "capture now" fails.</p>
         <p><b>Clear capture:</b> Manual function as fallback if captured information persists.</p>
         <p><b>Resize UI:</b> Slider adjusts scale.</p>
@@ -510,7 +514,7 @@
     const blob = new Blob([data], {type: type});
     const tryShare = async ()=>{ try{ if(navigator.canShare && typeof File!=='undefined'){ const f=new File([blob], name, {type}); if(navigator.canShare({files:[f]})){ await navigator.share({files:[f], title:name}); return true; } } }catch(_){ } return false; };
     const tryAnchor = ()=>{ try{ const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=name; a.rel='noopener'; a.target='_self'; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 1500); return true; }catch(_){ return false; } };
-    const tryGM = ()=>{ if(typeof GM_download==='function'){ try{ const dataUrl='data:'+type+','+encodeURIComponent(String(data)); GM_download({url:dataUrl, name, saveAs:true}); return true; }catch(_){ return false; } } return false; };
+    const tryGM = ()=>{ if(typeof GM_download==='function'){ try{ const url = (typeof data==='string') ? ('data:'+type+','+encodeURIComponent(data)) : URL.createObjectURL(blob); GM_download({url, name, saveAs:true}); return true; }catch(_){ return false; } } return false; };
     const tryMs = ()=>{ try{ if('msSaveOrOpenBlob' in navigator){ navigator.msSaveOrOpenBlob(blob, name); return true; } }catch(_){ return false; } return false; };
     (async()=>{ if(await tryShare()) return; if(tryAnchor()) return; if(tryGM()) return; if(tryMs()) return; const url=URL.createObjectURL(blob); window.open(url,'_blank'); setTimeout(()=>URL.revokeObjectURL(url),2000); })();
   };
@@ -538,6 +542,467 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
     const html=head+body+'</div></body></html>';
     download('crushon-chat-'+ts()+'.html', html, 'text/html;charset=utf-8');
     setStatus('exported .html','ok');
+  }
+
+
+  // ---------- SillyTavern character card export ----------
+  // Builds a chara_card_v2 PNG (tEXt "chara" = base64 JSON) using the character's avatar.
+  // Only exports when the character data is reachable: a public profile, or one you own.
+
+  const CARD_KEYS = {
+    name:        ['name','characterName','charName','title','displayName'],
+    description: ['description','intro','bio','summary','about','shortDescription','profile'],
+    personality: ['personality','persona','definition','characterDefinition','prompt','systemPrompt','instructions','longDescription'],
+    scenario:    ['scenario','worldScenario','world','setting','context'],
+    first_mes:   ['greeting','firstMessage','first_mes','firstMes','initialMessage','openingMessage','welcomeMessage'],
+    mes_example: ['exampleDialogs','exampleDialogue','exampleConversation','example_dialogs','mes_example','examples','sampleDialog'],
+    creator:     ['creator','author','userName','username','creatorName','ownerName','nickName'],
+    avatar:      ['avatar','avatarUrl','avatar_url','image','imageUrl','image_url','picture','photo','cover','coverUrl','thumbnail','profileImage']
+  };
+
+  const pick = (obj, keys) => {
+    for(const k of keys){
+      const v = obj?.[k];
+      if(typeof v === 'string' && v.trim()) return v.trim();
+      if(v && typeof v === 'object'){
+        const inner = v.url || v.src || v.text || v.value;
+        if(typeof inner === 'string' && inner.trim()) return inner.trim();
+      }
+    }
+    return '';
+  };
+
+  function characterIdFromPage(){
+    const m = location.pathname.match(/\/character\/([^/?#]+)/i);
+    if(m) return decodeURIComponent(m[1]);
+    const a = document.querySelector('a[href*="/character/"]');
+    const m2 = a && a.getAttribute('href').match(/\/character\/([^/?#]+)/i);
+    return m2 ? decodeURIComponent(m2[1]) : '';
+  }
+
+  // --- deep search of anything the page already loaded -------------------------
+  function scoreCandidate(o){
+    if(!o || typeof o!=='object' || Array.isArray(o)) return 0;
+    if(!pick(o, CARD_KEYS.name)) return 0;
+    let s = 1;
+    if(pick(o, CARD_KEYS.personality)) s += 4;
+    if(pick(o, CARD_KEYS.first_mes))   s += 3;
+    if(pick(o, CARD_KEYS.description)) s += 2;
+    if(pick(o, CARD_KEYS.scenario))    s += 1;
+    if(pick(o, CARD_KEYS.avatar))      s += 1;
+    return s;
+  }
+  function deepBest(root, best={score:0, obj:null}, depth=0, seen=new Set()){
+    if(!root || typeof root!=='object' || depth>12 || seen.has(root)) return best;
+    seen.add(root);
+    const s = scoreCandidate(root);
+    if(s > best.score) best = {score:s, obj:root};
+    for(const k in root){
+      let v; try{ v = root[k]; }catch(_){ continue; }
+      if(v && typeof v==='object') best = deepBest(v, best, depth+1, seen);
+    }
+    return best;
+  }
+
+  // Pull JSON objects out of Next.js flight/embedded payloads around a marker key.
+  function jsonEndFrom(str, start){
+    let depth=0, inStr=false, esc=false;
+    for(let i=start;i<str.length;i++){
+      const c = str[i];
+      if(inStr){ if(esc) esc=false; else if(c==='\\') esc=true; else if(c==='"') inStr=false; continue; }
+      if(c==='"') inStr=true;
+      else if(c==='{') depth++;
+      else if(c==='}'){ depth--; if(!depth) return i+1; }
+    }
+    return -1;
+  }
+  function objectsAroundMarkers(text){
+    const out=[]; const markers=/"(?:personality|persona|definition|greeting|firstMessage|first_mes|scenario|exampleDialogs)"\s*:/g;
+    let m, guard=0;
+    while((m = markers.exec(text)) && guard++ < 60){
+      let starts=[], i=m.index;
+      while(i>=0 && starts.length<25){ i = text.lastIndexOf('{', i-1); if(i<0) break; starts.push(i); }
+      for(const st of starts){
+        const end = jsonEndFrom(text, st);
+        if(end > m.index){
+          try{ out.push(JSON.parse(text.slice(st, end))); }catch(_){ }
+          break;
+        }
+      }
+    }
+    return out;
+  }
+  function embeddedPayloads(){
+    const blobs=[];
+    try{ if(window.__NEXT_DATA__) blobs.push(window.__NEXT_DATA__); }catch(_){}
+    try{
+      const f = self.__next_f;
+      if(Array.isArray(f)){
+        const text = f.map(x=>Array.isArray(x)? x[1] : '').filter(x=>typeof x==='string').join('');
+        if(text) objectsAroundMarkers(text.replace(/\\"/g,'"').replace(/\\n/g,'\n')).forEach(o=>blobs.push(o));
+      }
+    }catch(_){}
+    qsa('script[type="application/json"], script[type="application/ld+json"]').forEach(s=>{
+      try{ blobs.push(JSON.parse(s.textContent)); }catch(_){}
+    });
+    return blobs;
+  }
+
+  // --- optional API lookup (same-origin, uses your session cookies) ------------
+  async function apiLookup(id){
+    if(!id) return null;
+    const paths = [
+      `/api/character/${id}`, `/api/characters/${id}`, `/api/v1/character/${id}`,
+      `/api/character/detail?id=${id}`, `/api/character?id=${id}`
+    ];
+    for(const p of paths){
+      try{
+        const r = await fetch(location.origin + p, {credentials:'include', headers:{accept:'application/json'}});
+        if(!r.ok) continue;
+        const j = await r.json();
+        const best = deepBest(j);
+        if(best.obj) return best.obj;
+      }catch(_){ }
+    }
+    return null;
+  }
+
+  // --- last resort: whatever the page shows -----------------------------------
+  function domFallback(){
+    const meta = n => document.querySelector(`meta[property="${n}"], meta[name="${n}"]`)?.content || '';
+    const name = cleanAiNameExact(meta('og:title') || document.title);
+    if(!name || name==='AI') return null;
+    return {
+      name,
+      description: meta('og:description') || '',
+      avatar: meta('og:image') || document.querySelector('img[src*="avatar"], #chat-container img')?.src || '',
+      __fallback: true
+    };
+  }
+
+  // --- access gate ------------------------------------------------------------
+  function currentUserId(){
+    const hunt = o => {
+      const b = deepBestUser(o);
+      return b || '';
+    };
+    const deepBestUser = (o, d=0, seen=new Set()) => {
+      if(!o || typeof o!=='object' || d>8 || seen.has(o)) return '';
+      seen.add(o);
+      if((o.id || o.userId || o._id) && (o.email || o.userName || o.username || o.nickName)) return String(o.id || o.userId || o._id);
+      for(const k in o){ let v; try{ v=o[k]; }catch(_){ continue; } if(v && typeof v==='object'){ const r=deepBestUser(v,d+1,seen); if(r) return r; } }
+      return '';
+    };
+    for(const b of embeddedPayloads()){ const r = hunt(b); if(r) return r; }
+    try{
+      for(let i=0;i<localStorage.length;i++){
+        const raw = localStorage.getItem(localStorage.key(i));
+        if(!raw || raw[0] !== '{') continue;
+        const r = hunt(JSON.parse(raw));
+        if(r) return r;
+      }
+    }catch(_){}
+    return '';
+  }
+  // Returns {allowed:boolean, why:string}
+  function accessCheck(c){
+    const owner = String(c.creatorId ?? c.userId ?? c.authorId ?? c.ownerId ?? c.creator_id ?? c.user_id ?? '');
+    const me = currentUserId();
+    const mine = !!(owner && me && owner === me);
+    const vis = String(c.visibility ?? c.status ?? c.privacy ?? '').toLowerCase();
+    const isPrivate =
+      c.isPublic === false || c.public === false ||
+      c.isPrivate === true || c.private === true ||
+      /^(private|draft|unlisted|hidden)$/.test(vis);
+    if(mine) return {allowed:true, why:'you own this character'};
+    if(isPrivate) return {allowed:false, why:'this character is private and not yours — export blocked'};
+    return {allowed:true, why:'public profile'};
+  }
+
+  // --- PNG writing ------------------------------------------------------------
+  const PNG_SIG = [137,80,78,71,13,10,26,10];
+  const CRC_TABLE = (()=>{ const t=new Uint32Array(256);
+    for(let n=0;n<256;n++){ let c=n; for(let k=0;k<8;k++) c = (c&1) ? (0xEDB88320 ^ (c>>>1)) : (c>>>1); t[n]=c>>>0; }
+    return t; })();
+  function crc32(bytes){ let c=0xFFFFFFFF; for(let i=0;i<bytes.length;i++) c = CRC_TABLE[(c ^ bytes[i]) & 255] ^ (c>>>8); return (c ^ 0xFFFFFFFF)>>>0; }
+  function be32(n){ return [ (n>>>24)&255, (n>>>16)&255, (n>>>8)&255, n&255 ]; }
+  function latin1(str){ const a=new Uint8Array(str.length); for(let i=0;i<str.length;i++) a[i]=str.charCodeAt(i)&255; return a; }
+  function makeChunk(type, dataBytes){
+    const body = new Uint8Array(4 + dataBytes.length);
+    body.set(latin1(type), 0); body.set(dataBytes, 4);
+    const out = new Uint8Array(4 + body.length + 4);
+    out.set(be32(dataBytes.length), 0);
+    out.set(body, 4);
+    out.set(be32(crc32(body)), 4 + body.length);
+    return out;
+  }
+  function textChunk(keyword, text){
+    const k = latin1(keyword), t = latin1(text);
+    const d = new Uint8Array(k.length + 1 + t.length);
+    d.set(k,0); d[k.length]=0; d.set(t, k.length+1);
+    return makeChunk('tEXt', d);
+  }
+  function b64utf8(str){
+    const bytes = new TextEncoder().encode(str);
+    let s=''; const CH=0x8000;
+    for(let i=0;i<bytes.length;i+=CH) s += String.fromCharCode.apply(null, bytes.subarray(i, i+CH));
+    return btoa(s);
+  }
+  function embedCharaChunk(png, jsonStr){
+    if(!PNG_SIG.every((b,i)=>png[i]===b)) throw new Error('not a PNG');
+    const keep=[]; let end=null; let p=8;
+    const dv = new DataView(png.buffer, png.byteOffset, png.byteLength);
+    while(p + 8 <= png.length){
+      const len = dv.getUint32(p);
+      const type = String.fromCharCode(png[p+4],png[p+5],png[p+6],png[p+7]);
+      const chunk = png.subarray(p, p + 12 + len);
+      if(type === 'IEND'){ end = chunk; break; }
+      const isOldCard = type==='tEXt' && /^(chara|ccv3)\0/.test(String.fromCharCode(...chunk.subarray(8, Math.min(8+8, chunk.length))));
+      if(!isOldCard) keep.push(chunk);
+      p += 12 + len;
+    }
+    const b64 = b64utf8(jsonStr);
+    const parts = [ new Uint8Array(PNG_SIG), ...keep, textChunk('chara', b64), end || makeChunk('IEND', new Uint8Array(0)) ];
+    const total = parts.reduce((n,a)=>n+a.length, 0);
+    const out = new Uint8Array(total); let o=0;
+    for(const a of parts){ out.set(a, o); o += a.length; }
+    return out;
+  }
+
+  // --- image fetching / conversion --------------------------------------------
+  function gmFetchBlob(url){
+    return new Promise((resolve,reject)=>{
+      if(typeof GM_xmlhttpRequest !== 'function') return reject(new Error('no GM_xmlhttpRequest'));
+      GM_xmlhttpRequest({ method:'GET', url, responseType:'blob',
+        onload: r => (r.status>=200 && r.status<300 && r.response) ? resolve(r.response) : reject(new Error('http '+r.status)),
+        onerror: () => reject(new Error('gm error')), ontimeout: () => reject(new Error('timeout')) });
+    });
+  }
+  async function getImageBlob(url){
+    if(!url) throw new Error('no avatar url');
+    const abs = new URL(url, location.href).href;
+    try{
+      const r = await fetch(abs, {mode:'cors', credentials:'omit'});
+      if(r.ok) return await r.blob();
+    }catch(_){ }
+    return await gmFetchBlob(abs);
+  }
+  async function blobToPngBytes(blob){
+    const head = new Uint8Array(await blob.slice(0,8).arrayBuffer());
+    if(PNG_SIG.every((b,i)=>head[i]===b)) return new Uint8Array(await blob.arrayBuffer());
+    let src;
+    try{ src = await createImageBitmap(blob); }
+    catch(_){
+      src = await new Promise((res,rej)=>{ const u=URL.createObjectURL(blob); const im=new Image();
+        im.onload=()=>{ URL.revokeObjectURL(u); res(im); }; im.onerror=()=>{ URL.revokeObjectURL(u); rej(new Error('decode failed')); }; im.src=u; });
+    }
+    const cv = document.createElement('canvas');
+    cv.width = src.width || 400; cv.height = src.height || 600;
+    cv.getContext('2d').drawImage(src, 0, 0);
+    const out = await new Promise(res => cv.toBlob(res, 'image/png'));
+    return new Uint8Array(await out.arrayBuffer());
+  }
+  async function placeholderPngBytes(name){
+    const cv = document.createElement('canvas'); cv.width=400; cv.height=600;
+    const g = cv.getContext('2d');
+    g.fillStyle='#15151a'; g.fillRect(0,0,400,600);
+    g.fillStyle='#e6e6e6'; g.font='bold 120px system-ui,sans-serif'; g.textAlign='center'; g.textBaseline='middle';
+    g.fillText((name||'?').trim().slice(0,2).toUpperCase(), 200, 280);
+    g.fillStyle='#9a9aa8'; g.font='22px system-ui,sans-serif';
+    g.fillText(String(name||'').slice(0,24), 200, 400);
+    const blob = await new Promise(res => cv.toBlob(res,'image/png'));
+    return new Uint8Array(await blob.arrayBuffer());
+  }
+
+  // --- card assembly ----------------------------------------------------------
+  function normalizeExamples(v){
+    if(Array.isArray(v)) return v.map(x => typeof x==='string' ? x : (x?.text || x?.content || '')).filter(Boolean).join('\n');
+    return typeof v==='string' ? v : '';
+  }
+  function buildV2Card(c, meta){
+    const data = {
+      name:        cleanAiNameExact(pick(c, CARD_KEYS.name)),
+      description: stripHTML(pick(c, CARD_KEYS.description)),
+      personality: stripHTML(pick(c, CARD_KEYS.personality)),
+      scenario:    stripHTML(pick(c, CARD_KEYS.scenario)),
+      first_mes:   stripHTML(pick(c, CARD_KEYS.first_mes)),
+      mes_example: stripHTML(normalizeExamples(c.exampleDialogs ?? c.exampleDialogue ?? c.exampleConversation ?? c.mes_example ?? c.examples)),
+      creator_notes: `Exported from ${location.href} on ${new Date().toISOString()}`,
+      system_prompt: '',
+      post_history_instructions: '',
+      alternate_greetings: Array.isArray(c.alternateGreetings) ? c.alternateGreetings.map(String)
+                          : Array.isArray(c.greetings) ? c.greetings.slice(1).map(String) : [],
+      tags: Array.isArray(c.tags) ? c.tags.map(t => typeof t==='string' ? t : (t?.name || t?.title || '')).filter(Boolean) : [],
+      creator: pick(c, CARD_KEYS.creator) || (c.creator && typeof c.creator==='object' ? pick(c.creator, CARD_KEYS.creator) : ''),
+      character_version: String(c.version ?? '1.0'),
+      extensions: { crushon: { id: meta.id || '', url: location.href, source: meta.source } }
+    };
+    if(!data.personality && data.description){ data.personality = data.description; }
+    const card = { spec:'chara_card_v2', spec_version:'2.0', data };
+    // legacy top-level mirror so older frontends still read it
+    return Object.assign({
+      name: data.name, description: data.description, personality: data.personality,
+      scenario: data.scenario, first_mes: data.first_mes, mes_example: data.mes_example
+    }, card);
+  }
+
+  async function findCharacter(){
+    const id = characterIdFromPage();
+    let best = {score:0, obj:null};
+    for(const b of embeddedPayloads()){ best = deepBest(b, best); }
+    if(best.score >= 5) return { c: best.obj, id, source:'page-data' };
+    const api = await apiLookup(id);
+    if(api && scoreCandidate(api) > best.score) return { c: api, id, source:'api' };
+    if(best.obj) return { c: best.obj, id, source:'page-data' };
+    const dom = domFallback();
+    if(dom) return { c: dom, id, source:'dom' };
+    return null;
+  }
+
+  async function exportCharacterPNG(){
+    closeMenus();
+    setStatus('reading character…','muted');
+    showPrompt('Looking up the character…', {ok:false, cancel:false});
+    try{
+      const found = await findCharacter();
+      if(!found){
+        updatePrompt('Could not find character data on this page. Open the character’s profile or a chat with them, then try again.', {cancel:false, okText:'ok', onOK:hidePrompt});
+        setStatus('character not found','warn'); return;
+      }
+      const {c, id, source} = found;
+      const gate = accessCheck(c);
+      if(!gate.allowed){
+        updatePrompt(`Export blocked: ${gate.why}.`, {cancel:false, okText:'ok', onOK:hidePrompt});
+        setStatus('export blocked','warn'); return;
+      }
+
+      const card = buildV2Card(c, {id, source});
+      if(!card.name || card.name==='AI') card.name = card.data.name = currentAIName();
+
+      updatePrompt(`Building card for “${card.name}” (${gate.why})…`, {ok:false, cancel:false});
+      let png;
+      const avatarUrl = pick(c, CARD_KEYS.avatar) || document.querySelector('meta[property="og:image"]')?.content || '';
+      try{
+        png = await blobToPngBytes(await getImageBlob(avatarUrl));
+      }catch(err){
+        png = await placeholderPngBytes(card.name);
+      }
+      const out = embedCharaChunk(png, JSON.stringify(card));
+      const safe = card.name.replace(/[^\w\-]+/g,'_').slice(0,48) || 'character';
+      download(`${safe}.png`, out, 'image/png');
+
+      const thin = !card.data.personality && !card.data.first_mes;
+      updatePrompt(
+        `Saved ${safe}.png (SillyTavern v2 card, source: ${source}${thin ? ' — only public blurb text was available, so the card is thin' : ''}).`,
+        {cancel:false, okText:'ok', onOK:hidePrompt});
+      setStatus('exported character .png','ok');
+    }catch(err){
+      updatePrompt('Character export failed: ' + (err && err.message || err), {cancel:false, okText:'ok', onOK:hidePrompt});
+      setStatus('character export failed','warn');
+    }
+  }
+
+
+  // ---------- CrushOn tRPC + RSC access ----------
+  function trpcInput(v){
+    return (v === undefined || v === null)
+      ? { json: null, meta: { values: ['undefined'] } }
+      : { json: v };
+  }
+  async function trpc(proc, input){
+    const url = `${location.origin}/api/trpc/${proc}?batch=1&input=` +
+                encodeURIComponent(JSON.stringify({ 0: trpcInput(input) }));
+    const r = await fetch(url, { credentials:'include', headers:{ 'trpc-accept':'application/json', 'content-type':'application/json' } });
+    let j = null; try{ j = await r.json(); }catch(_){ }
+    const slot = Array.isArray(j) ? j[0] : j;
+    if(slot && slot.error) throw new Error(slot.error?.json?.message || slot.error?.message || 'trpc error');
+    return slot?.result?.data?.json ?? slot?.result?.data ?? null;
+  }
+  async function rscFetch(path){
+    const r = await fetch(location.origin + path, {
+      credentials:'include',
+      headers:{ 'RSC':'1', 'Next-Router-Prefetch':'1', 'accept':'*/*' }
+    });
+    if(!r.ok) throw new Error('http ' + r.status);
+    return await r.text();
+  }
+
+  // ---------- character data probe (diagnostic) ----------
+  async function trpcRaw(proc, input){
+    const url = `${location.origin}/api/trpc/${proc}?batch=1&input=` +
+                encodeURIComponent(JSON.stringify({ 0: trpcInput(input) }));
+    const r = await fetch(url, { credentials:'include', headers:{ 'trpc-accept':'application/json', 'content-type':'application/json' } });
+    const t = await r.text();
+    return { status: r.status, body: t };
+  }
+
+  async function probeCharacterData(){
+    closeMenus();
+    const id = characterIdFromPage();
+    const out = [];
+    const say = (...a) => out.push(a.join(' '));
+    showPrompt('Probing… (this one downloads JS bundles, give it a minute)', {ok:false, cancel:false});
+
+    say('URL: ' + location.href);
+    say('character id: ' + (id || '(none)'));
+
+    // === 1. full zod errors — these name the fields the endpoint actually wants ===
+    say('\n########## character.getCharacter input shapes ##########');
+    const shapes = [
+      { characterId: id },
+      { id: id },
+      { characterId: id, locale: 'en' },
+      { id: id, locale: 'en' },
+      { characterId: id, nsfw: true },
+      { characterId: id, nsfw: true, locale: 'en' },
+      { id: id, nsfw: true, locale: 'en' },
+      id
+    ];
+    for(const sh of shapes){
+      try{
+        const { status, body } = await trpcRaw('character.getCharacter', sh);
+        const label = typeof sh === 'string' ? '(bare string)' : JSON.stringify(Object.keys(sh));
+        say(`\n--- ${label} → HTTP ${status} ---`);
+        say(body.slice(0, 1400));
+      }catch(e){ say('--- ' + JSON.stringify(sh) + ' threw: ' + e.message); }
+    }
+
+    // === 2. grep their own JS bundles for the real call site ===
+    say('\n########## bundle grep ##########');
+    const srcs = Array.from(new Set(
+      Array.from(document.querySelectorAll('script[src]')).map(s => s.src)
+        .concat(performance.getEntriesByType('resource').map(e => e.name))
+        .filter(u => /static\.crushon\.ai\/_next\/static\/chunks\/.*\.js/.test(u))
+    ));
+    say('candidate chunks: ' + srcs.length);
+    let hits = 0;
+    for(const u of srcs){
+      if(hits >= 6) break;
+      let txt = '';
+      try{
+        const r = await fetch(u, { credentials:'omit' });
+        if(!r.ok) continue;
+        txt = await r.text();
+      }catch(_){ continue; }
+      if(!/getCharacter\b|getCharacterDetail|character\.getCharacter/.test(txt)) continue;
+      hits++;
+      say(`\n--- ${u.split('/').pop()} (${txt.length} chars) ---`);
+      const re = /getCharacter[A-Za-z]*/g;
+      let m, seen = new Set();
+      while((m = re.exec(txt)) && seen.size < 12){
+        if(seen.has(m[0])) continue;
+        seen.add(m[0]);
+        say(`[${m[0]}] …` + txt.slice(Math.max(0, m.index - 260), m.index + 400).replace(/\s+/g,' ') + '…');
+      }
+    }
+    if(!hits) say('(no chunk on this page references getCharacter — try running this on the character details page)');
+
+    const dump = out.join('\n');
+    try{ console.log('[co-probe]\n' + dump); }catch(_){}
+    download('crushon-probe3-' + ts() + '.txt', dump);
+    try{ await navigator.clipboard.writeText(dump); }catch(_){}
+    updatePrompt(`Probe v3 saved (${dump.length} chars) — check Downloads.`, {cancel:false, okText:'ok', onOK:hidePrompt});
+    setStatus('probe done','ok');
   }
 
   // ---------- simple prompt helpers ----------
