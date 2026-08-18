@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CrushOn Exporter PLUS (card export)
 // @namespace    co-export-plus
-// @version      1.8.0
+// @version      1.9.0
 // @description  Capture CrushOn chats with [user]/[ai] labels. Export TXT/HTML, plus SillyTavern-compatible character card .png. Stable on Firefox Android and PC.
 // @match        *://*.crushon.ai/*
 // @match        https://crushon.ai/*
@@ -179,6 +179,8 @@
   // ---------- state ----------
   let CHAT_CONTAINER = null;
   const records=[]; const seen=new Set();
+  // character profile captured alongside the chat log: {c, id, source, gate, q}
+  let CHAR = null;
   let SPEAKER_SIG = (function(){ try{ return GM_getValue('co_speaker_sig', null);}catch(_){ return null; } })();
   let AI_NAME_SNAPSHOT = (function(){ try{ return GM_getValue('co_ai_name_snapshot', null);}catch(_){ return null; } })();
 
@@ -206,7 +208,8 @@
     // HUD
     const hud=el('div',{id:'coHUD'});
     hud.innerHTML=`<div><b>Status:</b> <span id=coStatus class=muted>idle</span></div>
-    <div>Captured: <span id=coMsgs>0</span> | Groups: <span id=coGroups>0</span> | Split → <span id=coSplit>0U/0A</span></div>`;
+    <div>Captured: <span id=coMsgs>0</span> | Groups: <span id=coGroups>0</span> | Split → <span id=coSplit>0U/0A</span></div>
+    <div>Chat log: <span id=coHasLog class=muted>none</span> | Character: <span id=coHasCard class=muted>none</span></div>`;
     document.body.appendChild(hud);
 
     // Tab
@@ -276,14 +279,55 @@
   function setStatus(t,c){ const s=$('#coStatus'); if(s){ s.className=c||'muted'; s.textContent=t; } }
   function setCounts(split){ const gg=getGroups(); $('#coGroups').textContent=String(gg.length); $('#coMsgs').textContent=String(records.length); if(split!=null) $('#coSplit').textContent=split; }
 
+  // Reflect what's actually in hand: a chat log, a character profile, or both.
+  function setCardBadge(){
+    const log=$('#coHasLog');
+    if(log){
+      const n=records.length;
+      log.textContent = n ? `${n} msgs` : 'none';
+      log.className = n ? 'ok' : 'muted';
+    }
+    const el=$('#coHasCard'); if(!el) return;
+    if(!CHAR){ el.textContent='none'; el.className='muted'; return; }
+    if(!CHAR.gate.allowed){ el.textContent='blocked'; el.className='warn'; return; }
+    if(!CHAR.q.ok){ el.textContent='unusable'; el.className='warn'; return; }
+    const name = (cleanAiNameExact(pick(CHAR.c, CARD_KEYS.name))||'?').slice(0,18);
+    el.textContent = CHAR.q.defHidden ? `${name} (partial)` : `${name} (full)`;
+    el.className = CHAR.q.defHidden ? 'warn' : 'ok';
+  }
+
+  // Fetch the character profile for the current page. Never throws.
+  async function captureCharacter(onStep){
+    try{
+      const found = await findCharacter(onStep);
+      if(!found) { CHAR=null; setCardBadge(); return null; }
+      const gate = await accessCheck(found.c);
+      const q = cardQuality(found.c, found.source);
+      CHAR = { c:found.c, id:found.id, source:found.source, gate, q };
+    }catch(_){ CHAR=null; }
+    setCardBadge();
+    return CHAR;
+  }
+  // One-line human summary of the character half of a capture.
+  function charSummary(){
+    if(!CHAR) return 'Character profile: not found on this page.';
+    if(!CHAR.gate.allowed) return `Character profile: blocked — ${CHAR.gate.why}.`;
+    if(!CHAR.q.ok) return `Character profile: unusable — ${CHAR.q.why}.`;
+    const name = cleanAiNameExact(pick(CHAR.c, CARD_KEYS.name)) || '?';
+    const got = CHAR.q.filled.join(', ');
+    return CHAR.q.defHidden
+      ? `Character profile: “${name}” — partial (${got}).\nThe creator hid the definition, so personality/scenario/examples aren't available.`
+      : `Character profile: “${name}” — full (${got}).`;
+  }
+
   // ---------- help ----------
   function buildHelp(){
     const p=el('div',{id:'coHelp', class:'coFloating'});
     p.innerHTML=`<header><b>CrushOn Exporter • Read Me</b><button id=coHelpClose>Close</button></header>
       <div style="padding:12px 14px;font:13px/1.55 system-ui,-apple-system,Segoe UI,Roboto,Arial">
-        <p><b>Capture now:</b> Auto-calibrates for [user]/[ai] labels.</p>
+        <p><b>Capture now:</b> Auto-calibrates for [user]/[ai] labels, then also grabs the character profile. The HUD shows whether you captured a chat log, a character profile, or both.</p>
         <p><b>Export:</b> Save .txt or .html with [user]/[ai] labels.</p>
-        <p><b>Export character .png:</b> Saves the character as a SillyTavern v2 card (JSON embedded in their avatar PNG). Works on public profiles and on characters you own; private characters that aren't yours are blocked.</p>
+        <p><b>Export character .png:</b> Saves the character as a SillyTavern v2 card (JSON embedded in their avatar PNG). Works on public profiles and on characters you own; private characters that aren't yours are blocked. If CrushOn returns no real definition, the .png is refused rather than saved with placeholder text. Some creators hide their character's definition &mdash; those export as description + greeting only, and the card says so.</p>
         <p><b>Calibrate speakers:</b> Manual function as fallback if "capture now" fails.</p>
         <p><b>Clear capture:</b> Manual function as fallback if captured information persists.</p>
         <p><b>Resize UI:</b> Slider adjusts scale.</p>
@@ -416,7 +460,7 @@
           setAIName(aiName);
           updatePrompt('Capturing…',{cancel:false, ok:false});
           await doCaptureAfterCalibrated();
-          updatePrompt(`Success: captured ${records.length} messages.\nSplit: ${$('#coSplit').textContent}\nPress ok to close.`,{okText:'ok', onOK:hidePrompt, cancel:false});
+          await finishCapture();
         },
         onExtra: ()=>{ hidePrompt(); manualCalibrate(); },
         onCancel: ()=>{ cancelAndClear(); }
@@ -434,6 +478,33 @@
     });
   }
 
+  // Shared tail for every capture path: grab the character profile too, then
+  // report exactly what we ended up with.
+  async function finishCapture(){
+    updatePrompt('Captured chat. Now reading the character profile…', {cancel:false, ok:false});
+    await captureCharacter(s => updatePrompt('Reading character profile… ('+s+')', {cancel:false, ok:false}));
+    setCardBadge();
+
+    const nLog = records.length;
+    const cardOK = !!(CHAR && CHAR.gate.allowed && CHAR.q.ok);
+    const both = nLog>0 && cardOK;
+    const head = both ? 'Captured: chat log + character profile.'
+               : nLog>0 ? 'Captured: chat log only.'
+               : cardOK ? 'Captured: character profile only.'
+               : 'Captured: nothing usable.';
+    const msg = [
+      head, '',
+      `Chat log: ${nLog} messages (split ${$('#coSplit').textContent}).`,
+      charSummary(), '',
+      cardOK ? 'You can export .txt / .html and the character .png.'
+             : 'You can export .txt / .html. The character .png is unavailable.'
+    ].join('\n');
+
+    setStatus(both ? 'captured log + character' : nLog>0 ? 'captured log' : cardOK ? 'captured character' : 'nothing captured',
+              (nLog>0||cardOK) ? 'ok' : 'warn');
+    updatePrompt(msg, {okText:'ok', onOK:hidePrompt, cancel:false});
+  }
+
   // ---------- capture ----------
   async function captureNow(){
     clearCaptured(true); clearCalibration('captureNow');
@@ -444,7 +515,7 @@
       setAIName(auto.sig.aiName||'AI');
       updatePrompt(`Auto-calibration succeeded as [${currentAIName()}]. Capturing…`, {cancel:false, ok:false});
       await sleep(60); await doCaptureAfterCalibrated();
-      updatePrompt(`Success: captured ${records.length} messages.\nSplit: ${$('#coSplit').textContent}\nPress ok to close.`, {okText:'ok', onOK:hidePrompt, cancel:false});
+      await finishCapture();
       return;
     }
     try{
@@ -461,7 +532,7 @@
           setAIName(aiName);
           updatePrompt('Capturing…',{cancel:false, ok:false});
           await doCaptureAfterCalibrated();
-          updatePrompt(`Success: captured ${records.length} messages.\nSplit: ${$('#coSplit').textContent}\nPress ok to close.`, {okText:'ok', onOK:hidePrompt, cancel:false});
+          await finishCapture();
         },
         onExtra: ()=>{ hidePrompt(); captureNow(); },
         onCancel: ()=>{ cancelAndClear(); }
@@ -500,7 +571,7 @@
 
   // ---------- clear ----------
   function clearCaptured(silent=false){
-    records.length=0; seen.clear();
+    records.length=0; seen.clear(); CHAR=null; setCardBadge();
     const msgs=$('#coMsgs'); if(msgs) msgs.textContent='0';
     const groups=$('#coGroups'); if(groups) groups.textContent='0';
     const split=$('#coSplit'); if(split) split.textContent='0U/0A';
@@ -553,10 +624,10 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
     // CrushOn's real field names come first, generic guesses after.
     name:        ['name','characterName','charName','title','displayName'],
     description: ['description','intro','bio','summary','about','shortDescription','profile'],
-    personality: ['personality','appearance','persona','definition','characterDefinition','prompt','systemPrompt','instructions','longDescription'],
+    personality: ['personality','persona','definition','characterDefinition','prompt','systemPrompt','instructions','longDescription'],
     scenario:    ['scenario','worldScenario','world','setting','context'],
     first_mes:   ['greeting','firstMessage','first_mes','firstMes','initialMessage','openingMessage','welcomeMessage'],
-    mes_example: ['exampleDialogs','exampleDialogue','exampleConversation','example_dialogs','mes_example','examples','sampleDialog'],
+    mes_example: ['example_conversation','exampleDialogs','exampleDialogue','exampleConversation','example_dialogs','mes_example','examples','sampleDialog'],
     creator:     ['creator','author','userName','username','creatorName','ownerName','nickName'],
     avatar:      ['avatar','avatarUrl','avatar_url','image','imageUrl','image_url','picture','photo','cover','coverUrl','thumbnail','profileImage']
   };
@@ -711,7 +782,9 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
     //    numeric enum whose value we don't know, so sweep it until one sticks.
     if(!pick(acc||{}, CARD_KEYS.personality) || !pick(acc||{}, CARD_KEYS.first_mes)){
       step('getCharacter');
-      for(let dp=0; dp<=12; dp++){
+      // displayPosition is a numeric enum. Observed: 2/5/6/8/9 return the full
+      // record; the rest answer "character not seen". Try the good ones first.
+      for(const dp of [2,5,6,8,9,0,1,3,4,7,10,11,12]){
         if(await attempt('character.getCharacter', {characterId:id, displayPosition:dp})) break;
       }
     }
@@ -906,6 +979,52 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
     if(Array.isArray(v)) return v.map(x => typeof x==='string' ? x : (x?.text || x?.content || '')).filter(Boolean).join('\n');
     return typeof v==='string' ? v : '';
   }
+  // CrushOn keeps examples in either example_conversation (string) or
+  // newExampleConversation.messages (array of {role,content}-ish objects).
+  function exampleTextOf(c){
+    const s = stripHTML(normalizeExamples(c?.example_conversation ?? c?.exampleDialogs ?? c?.exampleDialogue
+                             ?? c?.exampleConversation ?? c?.mes_example ?? c?.examples));
+    if(s && s.trim()) return s;
+    const msgs = c?.newExampleConversation?.messages;
+    if(Array.isArray(msgs) && msgs.length){
+      const out = msgs.map(m => {
+        const txt = stripHTML((m?.content ?? m?.text ?? m?.message ?? '').toString());
+        if(!txt) return '';
+        const who = String(m?.role ?? m?.who ?? '').toLowerCase();
+        const tag = /user|human/.test(who) ? '{{user}}' : '{{char}}';
+        return tag + ': ' + txt;
+      }).filter(Boolean);
+      if(out.length) return '<START>\n' + out.join('\n');
+    }
+    return '';
+  }
+  // How much real character definition did we actually get?
+  // definitionVisibility === 2 means the creator hid the definition, and the
+  // server hands back empty strings for personality/scenario/examples.
+  function cardQuality(c, source){
+    const fromApi = /^trpc/.test(String(source||''));
+    const f = {
+      name:        !!cleanAiNameExact(pick(c, CARD_KEYS.name)),
+      description: !!stripHTML(pick(c, CARD_KEYS.description)),
+      personality: !!String(c?.personality||'').trim(),
+      scenario:    !!String(c?.scenario||'').trim(),
+      first_mes:   !!String(pick(c, CARD_KEYS.first_mes)||'').trim(),
+      mes_example: !!exampleTextOf(c)
+    };
+    const filled = ['description','personality','scenario','first_mes','mes_example'].filter(k=>f[k]);
+    const defHidden = c?.definitionVisibility === 2 ||
+                      (fromApi && !f.personality && !f.scenario && !f.mes_example && f.description);
+    return {
+      fromApi, fields:f, filled,
+      defHidden,
+      // enough to be worth writing a card at all
+      ok: fromApi && f.name && filled.length > 0,
+      why: !fromApi ? 'only page text was available (no API data)'
+         : !f.name  ? 'no character name'
+         : !filled.length ? 'the character record came back empty'
+         : ''
+    };
+  }
   // creator is sometimes a string, sometimes {id,name}; user{id,name} is the other spelling
   function creatorName(c){
     const cand = [c?.creator, c?.user, c?.author];
@@ -935,7 +1054,7 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
       personality: stripHTML(pick(c, CARD_KEYS.personality)),
       scenario:    stripHTML(pick(c, CARD_KEYS.scenario)),
       first_mes:   stripHTML(pick(c, CARD_KEYS.first_mes)),
-      mes_example: stripHTML(normalizeExamples(c.exampleDialogs ?? c.exampleDialogue ?? c.exampleConversation ?? c.mes_example ?? c.examples)),
+      mes_example: exampleTextOf(c),   // already stripped; keep <START> intact
       creator_notes: `Exported from ${location.href} on ${new Date().toISOString()}`,
       system_prompt: '',
       post_history_instructions: '',
@@ -946,7 +1065,21 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
       character_version: String(c.version ?? '1.0'),
       extensions: { crushon: { id: meta.id || '', url: location.href, source: meta.source } }
     };
-    if(!data.personality && data.description){ data.personality = data.description; }
+    // appearance/age aren't card fields, but they're real definition text —
+    // fold them into description rather than lose them.
+    const extra = [];
+    const appearance = String(c?.appearance||'').trim();
+    if(appearance) extra.push('Appearance: ' + stripHTML(appearance));
+    if(c?.age) extra.push('Age: ' + c.age);
+    if(extra.length) data.description = (data.description ? data.description + '\n\n' : '') + extra.join('\n');
+
+    // NOTE: deliberately no personality<-description fallback. Copying the
+    // public blurb into personality makes a hidden definition look complete.
+    const q = cardQuality(c, meta.source);
+    if(q.defHidden){
+      data.creator_notes += '\nNOTE: the creator hid this character’s definition on CrushOn, ' +
+                            'so personality / scenario / example dialogue were not available.';
+    }
     const card = { spec:'chara_card_v2', spec_version:'2.0', data };
     // legacy top-level mirror so older frontends still read it
     return Object.assign({
@@ -979,16 +1112,24 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
     setStatus('reading character…','muted');
     showPrompt('Looking up the character…', {ok:false, cancel:false});
     try{
-      const found = await findCharacter(s => updatePrompt('Looking up the character… ('+s+')', {ok:false, cancel:false}));
-      if(!found){
+      // reuse what "Capture now" already fetched, otherwise fetch on demand
+      if(!CHAR) await captureCharacter(s => updatePrompt('Looking up the character… ('+s+')', {ok:false, cancel:false}));
+      if(!CHAR){
         updatePrompt('Could not find character data on this page. Open the character’s profile or a chat with them, then try again.', {cancel:false, okText:'ok', onOK:hidePrompt});
         setStatus('character not found','warn'); return;
       }
-      const {c, id, source} = found;
-      const gate = await accessCheck(c);
+      const {c, id, source, gate, q} = CHAR;
       if(!gate.allowed){
         updatePrompt(`Export blocked: ${gate.why}.`, {cancel:false, okText:'ok', onOK:hidePrompt});
         setStatus('export blocked','warn'); return;
+      }
+      // Don't write a .png that only contains page furniture.
+      if(!q.ok){
+        updatePrompt(
+          `Can't build a character card: ${q.why}.\n\n` +
+          'Open the character’s profile or a chat with them and press “Capture now” first.',
+          {cancel:false, okText:'ok', onOK:hidePrompt});
+        setStatus('no character data','warn'); return;
       }
 
       const card = buildV2Card(c, {id, source});
@@ -1006,9 +1147,11 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
       const safe = card.name.replace(/[^\w\-]+/g,'_').slice(0,48) || 'character';
       download(`${safe}.png`, out, 'image/png');
 
-      const thin = !card.data.personality && !card.data.first_mes;
       updatePrompt(
-        `Saved ${safe}.png (SillyTavern v2 card, source: ${source}${thin ? ' — only public blurb text was available, so the card is thin' : ''}).`,
+        [`Saved ${safe}.png — SillyTavern v2 card.`, '',
+         `Included: ${q.filled.join(', ')}.`,
+         q.defHidden ? 'The creator hid this character’s definition on CrushOn, so personality, scenario and example dialogue were not available.' : '',
+         `Source: ${source}.`].filter(Boolean).join('\n'),
         {cancel:false, okText:'ok', onOK:hidePrompt});
       setStatus('exported character .png','ok');
     }catch(err){
