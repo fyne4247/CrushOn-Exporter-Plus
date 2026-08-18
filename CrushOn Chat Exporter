@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CrushOn Exporter PLUS (card export)
 // @namespace    co-export-plus
-// @version      1.9.0
+// @version      1.9.1
 // @description  Capture CrushOn chats with [user]/[ai] labels. Export TXT/HTML, plus SillyTavern-compatible character card .png. Stable on Firefox Android and PC.
 // @match        *://*.crushon.ai/*
 // @match        https://crushon.ai/*
@@ -853,7 +853,10 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
   // CrushOn's own rule, lifted from their bundle:
   //   getCharacterCreatorId = c => c?.user?.id ?? c?.creator?.id
   function characterCreatorId(c){
-    const v = (c && c.user && c.user.id) ?? (c && c.creator && c.creator.id)
+    // creator is spelled {id,name} by getCharacter but {userId,name} by
+    // getCharacterForNewChat — accept either.
+    const v = (c && c.user && (c.user.id ?? c.user.userId))
+           ?? (c && c.creator && (c.creator.id ?? c.creator.userId))
            ?? c?.creatorId ?? c?.userId ?? c?.authorId ?? c?.ownerId;
     return v ? String(v) : '';
   }
@@ -1012,8 +1015,11 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
       mes_example: !!exampleTextOf(c)
     };
     const filled = ['description','personality','scenario','first_mes','mes_example'].filter(k=>f[k]);
-    const defHidden = c?.definitionVisibility === 2 ||
-                      (fromApi && !f.personality && !f.scenario && !f.mes_example && f.description);
+    // definitionVisibility === 2 means "hidden from other people", NOT "absent".
+    // The owner still gets the full definition, so only call it hidden when the
+    // fields actually came back empty.
+    const defMissing = !f.personality && !f.scenario && !f.mes_example;
+    const defHidden  = defMissing && (c?.definitionVisibility === 2 || (fromApi && f.description));
     return {
       fromApi, fields:f, filled,
       defHidden,
