@@ -617,7 +617,7 @@
 
   // Shared tail for every capture path: grab the character profile too, then
   // report exactly what we ended up with.
-  async function finishCapture(){
+  async function finishCapture(afterCapture){
     updatePrompt(
       'Captured chat. Now reading the character profile…',
       {cancel:false, ok:false}
@@ -666,6 +666,11 @@
       (nLog>0||cardOK) ? 'ok' : 'warn'
     );
 
+    if(typeof afterCapture==='function'){
+      await afterCapture();
+      return;
+    }
+
     updatePrompt(msg, {
       okText:'ok',
       onOK:hidePrompt,
@@ -674,7 +679,7 @@
   }
 
   // ---------- capture ----------
-  async function captureNow(){
+  async function captureNow(afterCapture){
     clearCaptured(true);
     clearCalibration('captureNow');
 
@@ -696,7 +701,7 @@
 
       await sleep(60);
       await doCaptureAfterCalibrated();
-      await finishCapture();
+      await finishCapture(afterCapture);
       return;
     }
 
@@ -734,7 +739,7 @@
 
           updatePrompt('Capturing…',{cancel:false, ok:false});
           await doCaptureAfterCalibrated();
-          await finishCapture();
+          await finishCapture(afterCapture);
         },
 
         onExtra: ()=>{ hidePrompt(); captureNow(); },
@@ -960,11 +965,8 @@
     // Existing Capture now remains the reliable way to collect role labels and
     // the API-backed character record. Lite export is intentionally all-or-nothing.
     if(!records.length){
-      showPrompt(
-        'Nothing has been captured yet.\\n\\nOpen More ▾, press “Capture current chat,” then press Export all.',
-        {cancel:false,okText:'ok',onOK:hidePrompt}
-      );
-      setStatus('Lite export needs a capture','warn');
+      setStatus('Lite mode: capturing…','muted');
+      await captureNow(exportLite);
       return;
     }
 
