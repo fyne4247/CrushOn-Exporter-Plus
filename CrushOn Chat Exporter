@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         CrushOn Exporter PLUS (card export)
 // @namespace    co-export-plus
-// @version      1.9.1
-// @description  Capture CrushOn chats with [user]/[ai] labels. Export TXT/HTML, plus SillyTavern-compatible character card .png. Stable on Firefox Android and PC.
+// @version      1.9.2
+// @description  Capture CrushOn chats with [user]/[ai] labels. Export TXT/HTML/SillyTavern JSONL, plus SillyTavern-compatible character card .png. Stable on Firefox Android and PC.
 // @match        *://*.crushon.ai/*
 // @match        https://crushon.ai/*
 // @match        https://www.crushon.ai/*
@@ -218,7 +218,7 @@
     tab.onclick=()=>{ const b=$('#coBox'), h=$('#coHUD'); if(b){ b.dataset.minimized='0'; b.style.display=''; } if(h){ h.dataset.minimized='0'; h.style.display = HUD_ENABLED ? '' : 'none'; } tab.style.display='none'; };
 
     // Menus
-    const mExp=el('div',{id:'coMenuExport',class:'coMenu'}); mExp.append(mk('Export .txt',exportTxt), mk('Export .html',exportHTML), mk('Export character .png',exportCharacterPNG)); document.body.appendChild(mExp);
+    const mExp=el('div',{id:'coMenuExport',class:'coMenu'}); mExp.append(mk('Export .txt',exportTxt), mk('Export .html',exportHTML), mk('Export SillyTavern .jsonl',exportSillyTavernJSONL), mk('Export character .png',exportCharacterPNG)); document.body.appendChild(mExp);
     const mTools=el('div',{id:'coMenuTools',class:'coMenu'});
 
     // Toggle status bar
@@ -326,7 +326,7 @@
     p.innerHTML=`<header><b>CrushOn Exporter • Read Me</b><button id=coHelpClose>Close</button></header>
       <div style="padding:12px 14px;font:13px/1.55 system-ui,-apple-system,Segoe UI,Roboto,Arial">
         <p><b>Capture now:</b> Auto-calibrates for [user]/[ai] labels, then also grabs the character profile. The HUD shows whether you captured a chat log, a character profile, or both.</p>
-        <p><b>Export:</b> Save .txt or .html with [user]/[ai] labels.</p>
+        <p><b>Export:</b> Save .txt or .html with [user]/[ai] labels, or a native SillyTavern .jsonl chat that can be imported back into SillyTavern.</p>
         <p><b>Export character .png:</b> Saves the character as a SillyTavern v2 card (JSON embedded in their avatar PNG). Works on public profiles and on characters you own; private characters that aren't yours are blocked. If CrushOn returns no real definition, the .png is refused rather than saved with placeholder text. Some creators hide their character's definition &mdash; those export as description + greeting only, and the card says so.</p>
         <p><b>Calibrate speakers:</b> Manual function as fallback if "capture now" fails.</p>
         <p><b>Clear capture:</b> Manual function as fallback if captured information persists.</p>
@@ -496,8 +496,8 @@
       head, '',
       `Chat log: ${nLog} messages (split ${$('#coSplit').textContent}).`,
       charSummary(), '',
-      cardOK ? 'You can export .txt / .html and the character .png.'
-             : 'You can export .txt / .html. The character .png is unavailable.'
+      cardOK ? 'You can export .txt / .html / SillyTavern .jsonl and the character .png.'
+             : 'You can export .txt / .html / SillyTavern .jsonl. The character .png is unavailable.'
     ].join('\n');
 
     setStatus(both ? 'captured log + character' : nLog>0 ? 'captured log' : cardOK ? 'captured character' : 'nothing captured',
@@ -597,6 +597,53 @@
     download('crushon-chat-'+ts()+'.txt', lines.join('\n'));
     setStatus('exported .txt','ok');
   }
+  function exportSillyTavernJSONL(){
+    if(!records.length){ showPrompt('No captured data. Use “Capture now” first.',{cancel:false, okText:'ok', onOK:hidePrompt}); return; }
+    closeMenus();
+
+    const items=records.slice().sort((a,b)=>a.t-b.t);
+    const aiName=currentAIName() || 'AI';
+    const userName='User';
+    const exportedAt=new Date().toISOString();
+
+    // SillyTavern's native chat format is JSON Lines: one header object followed
+    // by one JSON object per message. user_name/character_name are retained for
+    // backward compatibility; modern SillyTavern primarily uses chat_metadata.
+    const rows=[{
+      chat_metadata:{
+        source:'CrushOn Exporter PLUS',
+        source_url:location.href,
+        imported_from:'crushon.ai',
+        exported_at:exportedAt
+      },
+      user_name:'unused',
+      character_name:'unused'
+    }];
+
+    for(const it of items){
+      const isUser=it.who==='USER';
+      const text=stripHTML(it.html);
+      rows.push({
+        name:isUser ? userName : aiName,
+        is_user:isUser,
+        is_system:false,
+        send_date:new Date(Number(it.t)||Date.now()).toISOString(),
+        mes:text,
+        extra:{}
+      });
+    }
+
+    const jsonl=rows.map(row=>JSON.stringify(row)).join('\n');
+    const safe=aiName.replace(/[^\w\-]+/g,'_').slice(0,48) || 'character';
+    download(`${safe}-crushon-chat-${ts()}.jsonl`, jsonl, 'application/x-ndjson;charset=utf-8');
+    setStatus('exported SillyTavern .jsonl','ok');
+    showPrompt(
+      `Saved a SillyTavern-importable JSONL chat with ${items.length} messages.\n\n` +
+      'Import it from SillyTavern’s chat-file import control for the character you want this history attached to.',
+      {cancel:false, okText:'ok', onOK:hidePrompt}
+    );
+  }
+
   function exportHTML(){
     if(!records.length){ showPrompt('No captured data. Use “Capture now” first.',{cancel:false, okText:'ok', onOK:hidePrompt}); return; }
     const items=records.slice().sort((a,b)=>a.t-b.t);
