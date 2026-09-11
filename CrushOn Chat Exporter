@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CrushOn Exporter v2
 // @namespace    co-export-plus
-// @version      2.1.0
+// @version      2.1.1
 // @description  Capture CrushOn chats with [user]/[ai] labels. Export TXT/HTML/SillyTavern JSONL, plus SillyTavern-compatible character card .png.
 // @match        https://crushon.ai/*
 // @match        https://www.crushon.ai/*
@@ -465,9 +465,9 @@
     p.innerHTML=`<header><b>CrushOn Exporter • Read Me</b><button id=coHelpClose>Close</button></header>
       <div style="padding:12px 14px;font:13px/1.55 system-ui,-apple-system,Segoe UI,Roboto,Arial">
         <p><b>Toggles:</b> PNG / JSONL / TXT pick what the <b>↓</b> button produces. They persist across reloads.</p>
-        <p><b>↓ Export:</b> Captures the chat (auto-calibrating [user]/[ai]), reads the character profile if PNG is on, then writes every selected format.</p>
-        <p><b>Formats:</b> .txt and .html carry [user]/[ai] labels; .jsonl imports back into SillyTavern; .png is a SillyTavern v2 card (JSON embedded in the avatar PNG). Works on public profiles and characters you own; private characters that aren't yours are blocked. If CrushOn returns no real definition, the .png is refused rather than saved with placeholder text. Creators who hide their definition export as description + greeting only, and the card says so.</p>
-        <p><b>⚙ More:</b> Status bar, HTML export, manual calibration, clear, resize, read me, character data dump.</p>
+        <p><b>↓ Export:</b> Recaptures the current chat whenever TXT or JSONL is selected, auto-calibrating [user]/[ai] if possible. Character lookup runs only when PNG is selected. PNG can export by itself from a character page even when no chat is present.</p>
+        <p><b>Formats:</b> .txt and .html carry [user]/[ai] labels; .jsonl imports back into SillyTavern; .png is a SillyTavern v2 card (JSON embedded in the avatar PNG). HTML recaptures the current chat automatically. Public profiles and characters you own can export as PNG; private characters that aren't yours are blocked. If CrushOn returns no real definition, the .png is refused rather than saved with placeholder text. Creators who hide their definition export as description + greeting only, and the card says so.</p>
+        <p><b>⚙ More:</b> Status bar, HTML export, manual calibration, clear, resize, read me, character data dump, hide panel.</p>
         <p><b>Drag:</b> Grab the bar's background. Buttons still click normally.</p>
       </div>`;
     p.querySelector('#coHelpClose').onclick=()=>{ unpinWindow('co_help', p); p.style.display='none'; };
@@ -558,7 +558,15 @@
   }
 
   // ---------- DOM helpers ----------
-  function resolveContainer(){ return CHAT_CONTAINER || $(SEL_CONTAINER) || document.body; }
+  function resolveContainer(){
+    // CrushOn navigates chats as an SPA. Refresh a cached container if the old
+    // node was detached, otherwise a later export can read the previous route.
+    const live = $(SEL_CONTAINER);
+    if(live && live !== CHAT_CONTAINER) CHAT_CONTAINER = live;
+    if(CHAT_CONTAINER && CHAT_CONTAINER.isConnected) return CHAT_CONTAINER;
+    CHAT_CONTAINER = live || null;
+    return CHAT_CONTAINER || document.body;
+  }
   function getGroups(){ return qsa(SEL_GROUPS, resolveContainer()); }
   function getBlock(g){ return g.querySelector(SEL_MARKDOWN_BLOCK) || g; }
   function alignRight(el){ const root=resolveContainer().getBoundingClientRect(); const b=(getBlock(el)).getBoundingClientRect(); return (b.left + b.width/2) > (root.left + root.width/2); }
@@ -704,20 +712,29 @@
     });
   }
 
-  // Shared tail for every capture path: grab the character profile too, then
-  // report exactly what we ended up with.
-  async function finishCapture(afterCapture){
-    updatePrompt(
-      'Captured chat. Now reading the character profile…',
-      {cancel:false, ok:false}
-    );
+  // Shared tail for every capture path. Character lookup can be skipped for
+  // chat-only exports so PNG is the only format that pays that cost.
+  async function finishCapture(afterCapture, opts={}){
+    const captureCharacterProfile = opts.captureCharacterProfile !== false;
+    const silentSummary = !!opts.silentSummary;
 
-    await captureCharacter(
-      s => updatePrompt(
-        'Reading character profile… ('+s+')',
+    if(captureCharacterProfile){
+      updatePrompt(
+        'Captured chat. Now reading the character profile…',
         {cancel:false, ok:false}
-      )
-    );
+      );
+
+      await captureCharacter(
+        s => updatePrompt(
+          'Reading character profile… ('+s+')',
+          {cancel:false, ok:false}
+        )
+      );
+    }else{
+      // captureNow() clears CHAR at the start. Keep it cleared rather than
+      // accidentally reusing a character from a previous SPA route.
+      CHAR=null;
+    }
 
     setCardBadge();
 
@@ -737,7 +754,7 @@
       head,
       '',
       `Chat log: ${nLog} messages (split ${$('#coSplit').textContent}).`,
-      charSummary(),
+      captureCharacterProfile ? charSummary() : 'Character profile: not requested.',
       '',
       cardOK
         ? 'You can export .txt / .html / SillyTavern .jsonl and the character .png.'
@@ -760,6 +777,11 @@
       return;
     }
 
+    if(silentSummary){
+      hidePrompt();
+      return;
+    }
+
     updatePrompt(msg, {
       okText:'ok',
       onOK:hidePrompt,
@@ -768,7 +790,9 @@
   }
 
   // ---------- capture ----------
-  async function captureNow(afterCapture){
+  // Returns true when chat capture completed, false when capture completed but
+  // found no messages, and null when the user canceled manual calibration.
+  async function captureNow(afterCapture, opts={}){
     clearCaptured(true);
     clearCalibration('captureNow');
 
@@ -790,8 +814,8 @@
 
       await sleep(60);
       await doCaptureAfterCalibrated();
-      await finishCapture(afterCapture);
-      return;
+      await finishCapture(afterCapture, opts);
+      return records.length>0;
     }
 
     try{
@@ -815,27 +839,49 @@
       const a=featureFromRow(aiNode);
       const aiName=cleanAiNameExact(extractAiNameFromRow(aiNode));
 
-      showPrompt(`Confirm calibration:\nUser = USER\nAI = ${aiName}`,{
-        okText:'ok',
-        extra:true,
-        extraText:'Start over',
+      // IMPORTANT: wait for the confirmation callback itself. The previous
+      // v2.1.0 implementation returned from captureNow() as soon as this prompt
+      // was displayed, so the unified ↓ flow believed capture had been canceled
+      // before the user could finish calibration.
+      return await new Promise(resolve=>{
+        showPrompt(`Confirm calibration:\nUser = USER\nAI = ${aiName}`,{
+          okText:'ok',
+          extra:true,
+          extraText:'Start over',
 
-        onOK: async ()=>{
-          SPEAKER_SIG={user:u, ai:a, aiName};
-          try{ GM_setValue('co_speaker_sig', SPEAKER_SIG); }catch{}
+          onOK: async ()=>{
+            try{
+              SPEAKER_SIG={user:u, ai:a, aiName};
+              try{ GM_setValue('co_speaker_sig', SPEAKER_SIG); }catch{}
 
-          setAIName(aiName);
+              setAIName(aiName);
 
-          updatePrompt('Capturing…',{cancel:false, ok:false});
-          await doCaptureAfterCalibrated();
-          await finishCapture(afterCapture);
-        },
+              updatePrompt('Capturing…',{cancel:false, ok:false});
+              await doCaptureAfterCalibrated();
+              await finishCapture(afterCapture, opts);
+              resolve(records.length>0);
+            }catch(err){
+              setStatus('capture failed','warn');
+              showPrompt('Capture failed: ' + (err?.message || err),
+                {okText:'ok', cancel:false, onOK:hidePrompt});
+              resolve(false);
+            }
+          },
 
-        onExtra: ()=>{ hidePrompt(); captureNow(); },
-        onCancel: ()=>{ cancelAndClear(); }
+          onExtra: async ()=>{
+            hidePrompt();
+            resolve(await captureNow(afterCapture, opts));
+          },
+
+          onCancel: ()=>{
+            cancelAndClear();
+            resolve(null);
+          }
+        });
       });
     }catch{
       cancelAndClear();
+      return null;
     }
   }
 
@@ -951,16 +997,18 @@
   }
 
   // ---------- download/export ----------
-  // Batch mode: suppresses per-export summary prompts and mobile share sheets
-  // so a single ↓ press produces one summary instead of a queue of them.
+  // Batch mode suppresses per-export prompts so ↓ can show one summary.
+  // MULTI_DOWNLOAD separately suppresses the mobile share sheet only when more
+  // than one file will be emitted. A one-format ↓ export can still use Share.
   let LITE_BATCH=false;
+  let MULTI_DOWNLOAD=false;
 
   const download=(name,data,mime)=>{
     const type = mime || 'text/plain;charset=utf-8';
     const blob = new Blob([data], {type: type});
 
     const tryShare = async ()=>{
-      if(LITE_BATCH) return false;
+      if(MULTI_DOWNLOAD) return false;
 
       try{
         if(navigator.canShare && typeof File!=='undefined'){
@@ -1053,8 +1101,8 @@
   async function captureAndExport(){
     closeMenus();
 
-    const picks = ['txt','jsonl','png'].filter(k=>EXPORT_FORMATS[k]);
-    if(!picks.length){
+    const requested = ['txt','jsonl','png'].filter(k=>EXPORT_FORMATS[k]);
+    if(!requested.length){
       showPrompt(
         'Pick at least one format — PNG, JSONL, or TXT — then press ↓ again.',
         {okText:'ok', cancel:false, onOK:hidePrompt}
@@ -1067,81 +1115,159 @@
     if(go){ go.disabled = true; go.classList.add('busy'); }
 
     const wasLite = LITE_BATCH;
-    LITE_BATCH = true;   // batch mode: suppress per-export summary prompts & mobile share sheets
+    const wasMulti = MULTI_DOWNLOAD;
+    LITE_BATCH = true;
+    MULTI_DOWNLOAD = false;
 
     try{
-      // Phase 1 — capture chat if we don't have it.
-      if(!records.length){
-        setStatus('capturing chat…','muted');
-        await captureNow(()=>{});
-      }
-      if(!records.length){
-        setStatus('capture canceled','warn');
-        return;
+      const picks = requested.slice();
+      const skipped = [];
+      const completed = [];
+      const wantsChat = picks.includes('txt') || picks.includes('jsonl');
+
+      // Always recapture chat-dependent formats. Reusing records here can export
+      // stale messages after new replies arrive or after CrushOn changes SPA routes.
+      if(wantsChat){
+        if(!getGroups().length){
+          for(const fmt of ['txt','jsonl']){
+            const i=picks.indexOf(fmt);
+            if(i>=0){
+              picks.splice(i,1);
+              skipped.push(`${fmt.toUpperCase()} skipped — no chat messages found on this page.`);
+            }
+          }
+          // No chat exists, so don't force the user through pointless calibration.
+          records.length=0;
+          seen.clear();
+          const msgs=$('#coMsgs'); if(msgs) msgs.textContent='0';
+          const split=$('#coSplit'); if(split) split.textContent='0U/0A';
+        }else{
+          setStatus('capturing current chat…','muted');
+          const captured = await captureNow(null, {
+            captureCharacterProfile:false,
+            silentSummary:true
+          });
+
+          if(captured===null){
+            // Explicit Cancel means cancel the whole ↓ operation.
+            return;
+          }
+
+          if(!records.length){
+            for(const fmt of ['txt','jsonl']){
+              const i=picks.indexOf(fmt);
+              if(i>=0){
+                picks.splice(i,1);
+                skipped.push(`${fmt.toUpperCase()} skipped — chat capture returned no messages.`);
+              }
+            }
+          }
+        }
+      }else{
+        // PNG-only exports must not inherit stale chat/character state from a
+        // previous route.
+        records.length=0;
+        seen.clear();
+        CHAR=null;
+        setCardBadge();
+        const msgs=$('#coMsgs'); if(msgs) msgs.textContent='0';
+        const split=$('#coSplit'); if(split) split.textContent='0U/0A';
       }
 
-      // Phase 2 — character, only if PNG is picked.
+      // Character lookup is performed only when PNG is actually requested, and
+      // it is refreshed every time so SPA navigation cannot reuse a stale CHAR.
       let pngReady = false;
       if(picks.includes('png')){
-        if(!CHAR || !CHAR.gate.allowed || !CHAR.q.ok){
-          setStatus('reading character…','muted');
-          await captureCharacter(s=>setStatus('character: '+s,'muted'));
-        }
+        CHAR=null;
+        setCardBadge();
+        setStatus('reading current character…','muted');
+        await captureCharacter(s=>setStatus('character: '+s,'muted'));
+
         if(CHAR && CHAR.gate.allowed && CHAR.q.ok){
           pngReady = true;
         }else{
           const i = picks.indexOf('png');
           if(i >= 0) picks.splice(i, 1);
+          skipped.push(
+            'PNG skipped — ' +
+            (CHAR ? (CHAR.gate.allowed ? CHAR.q.why : CHAR.gate.why) : 'no character data on this page')
+          );
         }
       }
 
       if(!picks.length){
         setStatus('nothing to export','warn');
         showPrompt(
-          'PNG was the only selected format, and the character card couldn’t be built.\n\n' +
-          'Toggle TXT or JSONL and press ↓ again.',
+          skipped.length ? skipped.join('\n') : 'Nothing exportable was found on this page.',
           {okText:'ok', cancel:false, onOK:hidePrompt}
         );
         return;
       }
 
-      // Phase 3 — export.
-      if(picks.includes('txt'))   { setStatus('exporting .txt…','muted');   exportTxt(); }
-      if(picks.includes('jsonl')) { setStatus('exporting .jsonl…','muted'); exportSillyTavernJSONL(); }
-      if(picks.includes('png') && pngReady){
-        setStatus('exporting character .png…','muted');
-        await exportCharacterPNG();
+      // More than one actual output suppresses the one-file mobile share sheet.
+      MULTI_DOWNLOAD = picks.length > 1;
+
+      if(picks.includes('txt')){
+        setStatus('exporting .txt…','muted');
+        exportTxt();
+        completed.push('• chat .txt');
       }
 
-      // Summary.
-      const lines = [`Exported ${records.length} message${records.length===1?'':'s'}.`];
-      if(picks.includes('txt'))   lines.push('• chat .txt');
-      if(picks.includes('jsonl')) lines.push('• SillyTavern .jsonl');
-      if(picks.includes('png'))   lines.push(`• character .png — ${CHAR.q.filled.join(', ')}`);
-      if(!picks.includes('png') && EXPORT_FORMATS.png){
+      if(picks.includes('jsonl')){
+        setStatus('exporting .jsonl…','muted');
+        exportSillyTavernJSONL();
+        completed.push('• SillyTavern .jsonl');
+      }
+
+      if(picks.includes('png') && pngReady){
+        setStatus('exporting character .png…','muted');
+        const pngOK = await exportCharacterPNG();
+        if(pngOK){
+          completed.push(`• character .png — ${CHAR.q.filled.join(', ')}`);
+        }else{
+          skipped.push('PNG failed during card generation or download preparation.');
+        }
+      }
+
+      const lines=[];
+      if(completed.length){
+        const exportedChat = picks.includes('txt') || picks.includes('jsonl');
+        lines.push(exportedChat
+          ? `Exported current chat (${records.length} message${records.length===1?'':'s'}).`
+          : 'Export complete.');
+        lines.push(...completed);
+      }else{
+        lines.push('Nothing was exported.');
+      }
+
+      if(skipped.length){
         lines.push('');
-        lines.push(
-          'PNG skipped — ' +
-          (CHAR ? (CHAR.gate.allowed ? CHAR.q.why : CHAR.gate.why) : 'no character data on this page')
-        );
+        lines.push(...skipped);
       }
 
       showPrompt(lines.join('\n'), {okText:'ok', cancel:false, onOK:hidePrompt});
-      setStatus('exported: ' + picks.join(' + '), 'ok');
+      setStatus(
+        completed.length ? 'exported: ' + completed.map(x=>x.replace(/^•\s*/, '')).join(' + ') : 'export failed',
+        completed.length ? 'ok' : 'warn'
+      );
     }catch(e){
       setStatus('export failed','warn');
       showPrompt('Export failed: ' + (e?.message || e),
         {okText:'ok', cancel:false, onOK:hidePrompt});
     }finally{
       if(go){ go.disabled = false; go.classList.remove('busy'); }
-      setTimeout(()=>{ LITE_BATCH = wasLite; }, 0);
+      // Keep the batch flags through currently queued download attempts.
+      setTimeout(()=>{
+        LITE_BATCH = wasLite;
+        MULTI_DOWNLOAD = wasMulti;
+      }, 0);
     }
   }
 
   function exportTxt(){
     if(!records.length){
       showPrompt(
-        'No captured data. Use “Capture now” first.',
+        'No captured chat is available to export.',
         {cancel:false, okText:'ok', onOK:hidePrompt}
       );
       return;
@@ -1173,7 +1299,7 @@
   function exportSillyTavernJSONL(){
     if(!records.length){
       showPrompt(
-        'No captured data. Use “Capture now” first.',
+        'No captured chat is available to export.',
         {cancel:false, okText:'ok', onOK:hidePrompt}
       );
       return;
@@ -1245,13 +1371,33 @@
     }
   }
 
-  function exportHTML(){
-    if(!records.length){
+  async function exportHTML(){
+    closeMenus();
+
+    if(!getGroups().length){
       showPrompt(
-        'No captured data. Use “Capture now” first.',
+        'No chat messages found on this page.',
         {cancel:false, okText:'ok', onOK:hidePrompt}
       );
-      return;
+      setStatus('no chat to export','warn');
+      return false;
+    }
+
+    setStatus('capturing current chat for HTML…','muted');
+    const captured = await captureNow(null, {
+      captureCharacterProfile:false,
+      silentSummary:true
+    });
+
+    if(captured===null) return false;
+
+    if(!records.length){
+      showPrompt(
+        'Chat capture returned no messages, so no HTML file was written.',
+        {cancel:false, okText:'ok', onOK:hidePrompt}
+      );
+      setStatus('HTML export unavailable','warn');
+      return false;
     }
 
     const items=records.slice().sort((a,b)=>a.t-b.t);
@@ -1282,6 +1428,8 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
     );
 
     setStatus('exported .html','ok');
+
+    return true;
   }
 
   // ---------- SillyTavern character card export ----------
@@ -3007,7 +3155,7 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
           'warn'
         );
 
-        return;
+        return false;
       }
 
       const {
@@ -3035,14 +3183,14 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
           'warn'
         );
 
-        return;
+        return false;
       }
 
       if(!q.ok){
         if(!LITE_BATCH){
           updatePrompt(
             `Can't build a character card: ${q.why}.\n\n` +
-            'Open the character’s profile or a chat with them and press “Capture now” first.',
+            'Open the character’s profile or a chat with them, then try again.',
             {
               cancel:false,
               okText:'ok',
@@ -3056,7 +3204,7 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
           'warn'
         );
 
-        return;
+        return false;
       }
 
       const card = buildV2Card(
@@ -3155,6 +3303,7 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
         'exported character .png',
         'ok'
       );
+      return true;
     }catch(err){
       if(!LITE_BATCH){
         updatePrompt(
@@ -3176,6 +3325,7 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
         'character export failed',
         'warn'
       );
+      return false;
     }
   }
 
