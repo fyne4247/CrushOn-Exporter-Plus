@@ -1,9 +1,8 @@
 // ==UserScript==
-// @name         CrushOn Exporter+
+// @name         CrushOn Exporter v2
 // @namespace    co-export-plus
-// @version      1.9.3-lite
-// @description  Capture CrushOn chats with [user]/[ai] labels. Export TXT/HTML/SillyTavern JSONL, plus SillyTavern-compatible character card .png. Stable on Firefox Android and PC.
-// @match        *://*.crushon.ai/*
+// @version      2.1.0
+// @description  Capture CrushOn chats with [user]/[ai] labels. Export TXT/HTML/SillyTavern JSONL, plus SillyTavern-compatible character card .png.
 // @match        https://crushon.ai/*
 // @match        https://www.crushon.ai/*
 // @run-at       document-idle
@@ -21,16 +20,22 @@
   // ---------- CSS ----------
   const CSS = `
 
-  #coBox{position:fixed;right:12px;bottom:12px;z-index:2147483647;display:flex;flex-direction:column;gap:6px;background:transparent;transform-origin:bottom right}
-  #coBox button{padding:10px 12px;font-size:13px;border-radius:10px;border:1px solid #333;color:#fff;background:#111;cursor:pointer;touch-action:manipulation}
-  #coBox button.coPrimary{font-weight:700;border-color:#2e7;background:linear-gradient(#1e5,#0a3)}
+  #coBox{position:fixed;right:12px;bottom:12px;z-index:2147483647;display:flex;gap:4px;padding:4px;background:rgba(15,15,16,.82);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:1px solid #2a2a2a;border-radius:10px;transform-origin:bottom right;opacity:.65;transition:opacity .15s ease;touch-action:none}
+  #coBox:hover{opacity:1}
+  #coBox button{width:32px;height:32px;padding:0;display:flex;align-items:center;justify-content:center;border-radius:6px;border:1px solid #333;background:#1a1a1b;color:#aaa;font:9px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.4px;font-weight:600;cursor:pointer;touch-action:manipulation;transition:background .12s,border-color .12s,color .12s,transform .06s;user-select:none;-webkit-user-select:none}
+  #coBox button:hover{border-color:#555;color:#eee;background:#222}
+  #coBox button:active{transform:scale(.92)}
+  #coBox button.on{border-color:#2e7;background:rgba(20,80,40,.55);color:#9f9}
+  #coBox button.coGo{border-color:#2e7;background:linear-gradient(#1e5,#0a3);color:#fff;font-size:16px;font-weight:400;letter-spacing:0}
+  #coBox button.coGo:hover{background:linear-gradient(#2f6,#1b4)}
+  #coBox button.coGo.busy{background:linear-gradient(#a83,#640);border-color:#c95;color:#ffd}
+
   #coHUD{position:fixed;left:12px;bottom:12px;z-index:2147483647;background:#0f0f10;color:#e6e6e6;border:1px solid #333;border-radius:10px;padding:10px 12px;font:12px/1.4 monospace;min-width:320px;transform-origin:bottom left}
   #coHUD .ok{color:#7bff7b} #coHUD .warn{color:#ffd479} #coHUD .muted{opacity:.8}
   #coTab{position:fixed;right:12px;bottom:12px;width:28px;height:28px;border-radius:8px;background:#111;border:1px solid #333;color:#fff;z-index:2147483647;display:none;align-items:center;justify-content:center;font:14px monospace}
 
-
   .coMenu{position:fixed;background:#151515;color:#fff;border:1px solid #3a3a3a;border-radius:10px;box-shadow:0 10px 32px #000b;display:none;min-width:240px;padding:6px;z-index:2147483647}
-  .coMenu button{display:block;width:100%;text-align:left;margin:2px 0;padding:8px 10px;background:#1b1b1c;color:#fff;border:1px solid #333;border-radius:8px}
+  .coMenu button{display:block;width:100%;text-align:left;margin:2px 0;padding:8px 10px;background:#1b1b1c;color:#fff;border:1px solid #333;border-radius:8px;cursor:pointer}
 
   .coFloating{position:fixed;z-index:2147483647;background:#0f0f10;color:#e6e6e6;border:1px solid #333;border-radius:10px;transform-origin:top left}
 
@@ -44,11 +49,9 @@
   #coPrompt .neutral{border-color:#777;background-image:linear-gradient(#555,#333)}
   input#coScaleSlider{width:100%}
 
-
   #coHelp.coFloating{display:none;min-width:300px;max-width:min(92vw,680px)}
   #coHelp header{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid #333;background:#111;border-radius:10px 10px 0 0}
   #coHelpClose{padding:6px 8px;font-size:12px;border:1px solid #333;color:#fff;background:#222;cursor:pointer}
-
 
   .coIcon{position:absolute;top:6px;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:14px;border:1px solid #3a3a3a;border-radius:50%;background:#1b1b1c;color:#bbb;cursor:pointer;transition:opacity .15s ease,color .15s ease,background .15s ease,border-color .15s ease}
   .coHandle{left:6px;opacity:.35;touch-action:none}
@@ -152,6 +155,60 @@
     document.addEventListener('touchmove', e=>{ const t=e.touches?.[0]; if(!t) return; move(t.clientX, t.clientY); }, {passive:false});
     document.addEventListener('touchend', end);
   }
+
+  // Whole-bar drag (background only; buttons still click normally)
+  function makeBarDraggable(el, posKey){
+    if(!el) return;
+    let sx=0, sy=0, ox=0, oy=0, down=false, moved=false;
+
+    const start = (cx,cy)=>{
+      const r = el.getBoundingClientRect();
+      sx=cx; sy=cy;
+      ox = r.left + window.scrollX;
+      oy = r.top  + window.scrollY;
+      down = true; moved = false;
+    };
+    const move = (cx,cy,ev)=>{
+      if(!down) return;
+      const dx = cx - sx, dy = cy - sy;
+      if(!moved && Math.abs(dx) + Math.abs(dy) < 4) return;
+      moved = true;
+      el.style.left   = (ox + dx) + 'px';
+      el.style.top    = (oy + dy) + 'px';
+      el.style.right  = 'auto';
+      el.style.bottom = 'auto';
+      if(ev && ev.cancelable) ev.preventDefault();
+    };
+    const end = ()=>{
+      if(!down) return;
+      down = false;
+      if(moved){
+        ensureInViewport(el);
+        if(posKey) savePos(posKey, el);
+      }
+    };
+
+    el.addEventListener('mousedown', e=>{
+      if(e.target.closest('button')) return;
+      e.preventDefault();
+      start(e.clientX, e.clientY);
+    });
+    el.addEventListener('touchstart', e=>{
+      if(e.target.closest('button')) return;
+      const t = e.touches?.[0]; if(!t) return;
+      start(t.clientX, t.clientY);
+    }, {passive:true});
+
+    document.addEventListener('mousemove', e=>move(e.clientX, e.clientY, e));
+    document.addEventListener('touchmove', e=>{
+      const t = e.touches?.[0]; if(!t) return;
+      move(t.clientX, t.clientY, e);
+    }, {passive:false});
+
+    document.addEventListener('mouseup', end);
+    document.addEventListener('touchend', end);
+  }
+
   function clampVisiblePopups(){
     ['#coPrompt','#coHelp'].forEach(sel=>{
       const n=$(sel);
@@ -185,6 +242,19 @@
   let SPEAKER_SIG = (function(){ try{ return GM_getValue('co_speaker_sig', null);}catch(_){ return null; } })();
   let AI_NAME_SNAPSHOT = (function(){ try{ return GM_getValue('co_ai_name_snapshot', null);}catch(_){ return null; } })();
 
+  // Format toggles for the top bar
+  const EXPORT_FORMATS = {
+    png:   (()=>{ try{ return GM_getValue('co_fmt_png',   true); }catch(_){ return true; } })(),
+    jsonl: (()=>{ try{ return GM_getValue('co_fmt_jsonl', true); }catch(_){ return true; } })(),
+    txt:   (()=>{ try{ return GM_getValue('co_fmt_txt',   true); }catch(_){ return true; } })(),
+  };
+  function setFormat(key, on){
+    EXPORT_FORMATS[key] = !!on;
+    try{ GM_setValue('co_fmt_'+key, EXPORT_FORMATS[key]); }catch(_){}
+    const b = $('#coBtn_'+key);
+    if(b) b.classList.toggle('on', EXPORT_FORMATS[key]);
+  }
+
   // ---------- selectors ----------
   const SEL_CONTAINER = '#chat-container';
   // Updated: descendant matching so AI rows nested under div.w-full are found
@@ -198,102 +268,124 @@
   function buildMainUI(){
     if($('#coBox')) return;
 
-    // Lite mode: one obvious export button; every secondary control is in More.
-    const box=el('div',{id:'coBox'});
-    const bLite=btn('Export all (.txt + .png + .jsonl)', exportLite);
-    bLite.className='coPrimary';
-    const bMore=btn('More ▾', ()=>toggleMenu('export',bMore));
-    box.append(bLite,bMore);
-    document.body.appendChild(box);
+    // ---- the bar: 5 small squares ----
+    const bar = el('div',{id:'coBox'});
+    bar.setAttribute('role','toolbar');
+    bar.setAttribute('aria-label','CrushOn Exporter');
 
-    // HUD
-    const hud=el('div',{id:'coHUD'});
-    hud.innerHTML=`<div><b>Status:</b> <span id=coStatus class=muted>idle</span></div>
+    const mkTog = (key,label,title)=>{
+      const b = el('button',{type:'button',title});
+      b.id = 'coBtn_'+key;
+      b.textContent = label;
+      if(EXPORT_FORMATS[key]) b.classList.add('on');
+      b.onclick = ()=>setFormat(key, !EXPORT_FORMATS[key]);
+      return b;
+    };
+
+    const bPng   = mkTog('png',   'PNG',   'Export character card as PNG');
+    const bJsonl = mkTog('jsonl', 'JSONL', 'Export chat as SillyTavern .jsonl');
+    const bTxt   = mkTog('txt',   'TXT',   'Export chat as plain .txt');
+
+    const bGo = el('button',{id:'coGo',type:'button',title:'Capture and export selected formats'});
+    bGo.className = 'coGo';
+    bGo.textContent = '↓';
+    bGo.onclick = captureAndExport;
+
+    const bCfg = el('button',{id:'coCfg',type:'button',title:'More tools'});
+    bCfg.textContent = '⚙';
+    bCfg.onclick = ()=>toggleMenu('export', bCfg);
+
+    bar.append(bPng, bJsonl, bTxt, bGo, bCfg);
+    document.body.appendChild(bar);
+
+    // ---- HUD (unchanged, opt-in) ----
+    const hud = el('div',{id:'coHUD'});
+    hud.innerHTML = `<div><b>Status:</b> <span id=coStatus class=muted>idle</span></div>
     <div>Captured: <span id=coMsgs>0</span> | Groups: <span id=coGroups>0</span> | Split → <span id=coSplit>0U/0A</span></div>
     <div>Chat log: <span id=coHasLog class=muted>none</span> | Character: <span id=coHasCard class=muted>none</span></div>`;
     document.body.appendChild(hud);
 
-    // Reopen tab after Hide panel.
-    const tab=el('div',{id:'coTab',textContent:'≡'});
+    // ---- reopen tab after Hide panel ----
+    const tab = el('div',{id:'coTab', textContent:'≡'});
     document.body.appendChild(tab);
-    tab.onclick=()=>{
-      const b=$('#coBox'), h=$('#coHUD');
+    tab.onclick = ()=>{
+      const b = $('#coBox'), h = $('#coHUD');
       if(b){ b.dataset.minimized='0'; b.style.display=''; }
-      if(h){ h.dataset.minimized='0'; h.style.display=HUD_ENABLED ? '' : 'none'; }
+      if(h){ h.dataset.minimized='0'; h.style.display = HUD_ENABLED ? '' : 'none'; }
       tab.style.display='none';
     };
 
-    // Everything besides the primary export button is deliberately tucked away.
-    const mExp=el('div',{id:'coMenuExport',class:'coMenu'});
-    const divider=el('div');
-    divider.style.cssText='height:1px;background:#3a3a3a;margin:7px 4px';
+    // ---- simplified settings menu ----
+    const mExp = el('div',{id:'coMenuExport', class:'coMenu'});
 
-    const btnHudToggle=document.createElement('button');
-    btnHudToggle.id='coToggleHUD';
-    btnHudToggle.textContent=HUD_ENABLED ? 'Hide status bar' : 'Show status bar';
-    btnHudToggle.onclick=()=>setHUDEnabled(!HUD_ENABLED);
+    const btnHudToggle = document.createElement('button');
+    btnHudToggle.id = 'coToggleHUD';
+    btnHudToggle.textContent = HUD_ENABLED ? 'Hide status bar' : 'Show status bar';
+    btnHudToggle.onclick = ()=>setHUDEnabled(!HUD_ENABLED);
 
     mExp.append(
-      mk('Capture current chat',captureNow),
-      mk('Export .txt only',exportTxt),
-      mk('Export .html only',exportHTML),
-      mk('Export SillyTavern .jsonl only',exportSillyTavernJSONL),
-      mk('Export character .png only',exportCharacterPNG),
-      divider,
       btnHudToggle,
-      mk('Clear captured',()=>clearCaptured(false)),
-      mk('Calibrate speakers',manualCalibrate),
-      mk('Resize UI…',showResizeUI),
-      mk('Dump character data',probeCharacterData),
-      mk('Read me',()=>{
-        const h=$('#coHelp');
+      mk('Export .html (bonus)', exportHTML),
+      divider(),
+      mk('Calibrate speakers (fallback)', manualCalibrate),
+      mk('Clear captured', ()=>clearCaptured(false)),
+      divider(),
+      mk('Resize UI…', showResizeUI),
+      mk('Read me', ()=>{
+        const h = $('#coHelp');
         h.style.display='block';
         closeMenus();
-        restorePosOrCenter('co_pos_help',h);
+        restorePosOrCenter('co_pos_help', h);
       }),
-      mk('Hide panel',()=>hidePanel(true))
+      mk('Dump character data', probeCharacterData),
+      divider(),
+      mk('Hide panel', ()=>hidePanel(true))
     );
     document.body.appendChild(mExp);
 
-    // Help + Prompt
     document.body.appendChild(buildHelp());
     document.body.appendChild(buildPrompt());
 
-    document.addEventListener('click',e=>{
+    document.addEventListener('click', e=>{
       if(!(e.target.closest && (
         e.target.closest('#coBox') ||
         e.target.closest('.coMenu') ||
         e.target.closest('#coPrompt') ||
         e.target.closest('#coHelp')
       ))) closeMenus();
-    },true);
+    }, true);
 
-    window.addEventListener('keydown',e=>{
+    window.addEventListener('keydown', e=>{
       if(e.altKey && String(e.key).toLowerCase()==='e'){
-        $('#coBox').style.display='';
-        $('#coHUD').style.display=HUD_ENABLED ? '' : 'none';
-        $('#coTab').style.display='none';
+        const b = $('#coBox'), h = $('#coHUD'), t = $('#coTab');
+        if(b){ b.style.display=''; b.dataset.minimized='0'; }
+        if(h){ h.style.display = HUD_ENABLED ? '' : 'none'; h.dataset.minimized='0'; }
+        if(t) t.style.display='none';
       }
-    },true);
+    }, true);
 
-    CHAT_CONTAINER=$(SEL_CONTAINER) || CHAT_CONTAINER;
+    CHAT_CONTAINER = $(SEL_CONTAINER) || CHAT_CONTAINER;
     setCounts('0U/0A');
     setStatus('idle','muted');
     applyScale(UI_SCALE);
 
-    const c1=addOverlayControls(box,'co_box','co_pos_box');
-    makeDraggable(box,'co_pos_box',c1.handle);
-    restorePos('co_pos_box',box);
+    makeBarDraggable(bar, 'co_pos_box');
+    restorePos('co_pos_box', bar);
 
-    const c2=addOverlayControls(hud,'co_hud','co_pos_hud');
-    makeDraggable(hud,'co_pos_hud',c2.handle);
-    restorePos('co_pos_hud',hud);
+    const c2 = addOverlayControls(hud, 'co_hud', 'co_pos_hud');
+    makeDraggable(hud, 'co_pos_hud', c2.handle);
+    restorePos('co_pos_hud', hud);
 
     updateHUDVisibility();
     updateToolsMenuLabels();
   }
 
-  function btn(t,fn){const b=document.createElement('button'); b.textContent=t; b.onclick=fn; return b;}
+  function divider(){
+    const d = document.createElement('div');
+    d.style.cssText = 'height:1px;background:#3a3a3a;margin:7px 4px';
+    return d;
+  }
+
   function mk(t,fn){const b=document.createElement('button'); b.textContent=t; b.onclick=fn; return b;}
 
   function toggleMenu(which,btn){
@@ -372,14 +464,11 @@
     const p=el('div',{id:'coHelp', class:'coFloating'});
     p.innerHTML=`<header><b>CrushOn Exporter • Read Me</b><button id=coHelpClose>Close</button></header>
       <div style="padding:12px 14px;font:13px/1.55 system-ui,-apple-system,Segoe UI,Roboto,Arial">
-        <p><b>Capture now:</b> Auto-calibrates for [user]/[ai] labels, then also grabs the character profile. The HUD shows whether you captured a chat log, a character profile, or both.</p>
-        <p><b>Export:</b> Save .txt or .html with [user]/[ai] labels, or a native SillyTavern .jsonl chat that can be imported back into SillyTavern.</p>
-        <p><b>Export character .png:</b> Saves the character as a SillyTavern v2 card (JSON embedded in their avatar PNG). Works on public profiles and on characters you own; private characters that aren't yours are blocked. If CrushOn returns no real definition, the .png is refused rather than saved with placeholder text. Some creators hide their character's definition &mdash; those export as description + greeting only, and the card says so.</p>
-        <p><b>Calibrate speakers:</b> Manual function as fallback if "capture now" fails.</p>
-        <p><b>Clear capture:</b> Manual function as fallback if captured information persists.</p>
-        <p><b>Resize UI:</b> Slider adjusts scale.</p>
-        <p><b>Status bar:</b> Show/Hide status bar.</p>
-        <p><b>Drag:</b> use ⠿ on the top-left.</p>
+        <p><b>Toggles:</b> PNG / JSONL / TXT pick what the <b>↓</b> button produces. They persist across reloads.</p>
+        <p><b>↓ Export:</b> Captures the chat (auto-calibrating [user]/[ai]), reads the character profile if PNG is on, then writes every selected format.</p>
+        <p><b>Formats:</b> .txt and .html carry [user]/[ai] labels; .jsonl imports back into SillyTavern; .png is a SillyTavern v2 card (JSON embedded in the avatar PNG). Works on public profiles and characters you own; private characters that aren't yours are blocked. If CrushOn returns no real definition, the .png is refused rather than saved with placeholder text. Creators who hide their definition export as description + greeting only, and the card says so.</p>
+        <p><b>⚙ More:</b> Status bar, HTML export, manual calibration, clear, resize, read me, character data dump.</p>
+        <p><b>Drag:</b> Grab the bar's background. Buttons still click normally.</p>
       </div>`;
     p.querySelector('#coHelpClose').onclick=()=>{ unpinWindow('co_help', p); p.style.display='none'; };
     const c=addOverlayControls(p, 'co_help', 'co_pos_help'); makeDraggable(p, 'co_pos_help', c.handle);
@@ -801,7 +890,7 @@
     );
   }
 
-  // --------- CHANGED: role decision (hasCharLink-first) ---------
+  // --------- role decision (hasCharLink-first) ---------
   function decideWho(g){
     const f = featureFromRow(g);
 
@@ -862,7 +951,8 @@
   }
 
   // ---------- download/export ----------
-  // Lite mode bypasses mobile sharing so its three files do not collide in one share sheet.
+  // Batch mode: suppresses per-export summary prompts and mobile share sheets
+  // so a single ↓ press produces one summary instead of a queue of them.
   let LITE_BATCH=false;
 
   const download=(name,data,mime)=>{
@@ -959,41 +1049,92 @@
     })();
   };
 
-  async function exportLite(){
+  // Unified capture + export triggered by the ↓ button.
+  async function captureAndExport(){
     closeMenus();
 
-    // Existing Capture now remains the reliable way to collect role labels and
-    // the API-backed character record. Lite export is intentionally all-or-nothing.
-    if(!records.length){
-      setStatus('Lite mode: capturing…','muted');
-      await captureNow(exportLite);
-      return;
-    }
-
-    if(!CHAR){
-      setStatus('Lite mode: reading character…','muted');
-      await captureCharacter(s=>setStatus('Lite mode: '+s+'…','muted'));
-    }
-
-    if(!CHAR || !CHAR.gate.allowed || !CHAR.q.ok){
+    const picks = ['txt','jsonl','png'].filter(k=>EXPORT_FORMATS[k]);
+    if(!picks.length){
       showPrompt(
-        'Export all needs an exportable character card as well as the captured chat.\\n\\n' +
-        'The card is unavailable if CrushOn did not return real character data, or if the character is private and not yours.',
-        {cancel:false,okText:'ok',onOK:hidePrompt}
+        'Pick at least one format — PNG, JSONL, or TXT — then press ↓ again.',
+        {okText:'ok', cancel:false, onOK:hidePrompt}
       );
-      setStatus('Lite export unavailable','warn');
+      setStatus('no format selected','warn');
       return;
     }
 
-    LITE_BATCH=true;
+    const go = $('#coGo');
+    if(go){ go.disabled = true; go.classList.add('busy'); }
+
+    const wasLite = LITE_BATCH;
+    LITE_BATCH = true;   // batch mode: suppress per-export summary prompts & mobile share sheets
 
     try{
-      exportTxt();
-      exportSillyTavernJSONL();
-      await exportCharacterPNG();
+      // Phase 1 — capture chat if we don't have it.
+      if(!records.length){
+        setStatus('capturing chat…','muted');
+        await captureNow(()=>{});
+      }
+      if(!records.length){
+        setStatus('capture canceled','warn');
+        return;
+      }
+
+      // Phase 2 — character, only if PNG is picked.
+      let pngReady = false;
+      if(picks.includes('png')){
+        if(!CHAR || !CHAR.gate.allowed || !CHAR.q.ok){
+          setStatus('reading character…','muted');
+          await captureCharacter(s=>setStatus('character: '+s,'muted'));
+        }
+        if(CHAR && CHAR.gate.allowed && CHAR.q.ok){
+          pngReady = true;
+        }else{
+          const i = picks.indexOf('png');
+          if(i >= 0) picks.splice(i, 1);
+        }
+      }
+
+      if(!picks.length){
+        setStatus('nothing to export','warn');
+        showPrompt(
+          'PNG was the only selected format, and the character card couldn’t be built.\n\n' +
+          'Toggle TXT or JSONL and press ↓ again.',
+          {okText:'ok', cancel:false, onOK:hidePrompt}
+        );
+        return;
+      }
+
+      // Phase 3 — export.
+      if(picks.includes('txt'))   { setStatus('exporting .txt…','muted');   exportTxt(); }
+      if(picks.includes('jsonl')) { setStatus('exporting .jsonl…','muted'); exportSillyTavernJSONL(); }
+      if(picks.includes('png') && pngReady){
+        setStatus('exporting character .png…','muted');
+        await exportCharacterPNG();
+      }
+
+      // Summary.
+      const lines = [`Exported ${records.length} message${records.length===1?'':'s'}.`];
+      if(picks.includes('txt'))   lines.push('• chat .txt');
+      if(picks.includes('jsonl')) lines.push('• SillyTavern .jsonl');
+      if(picks.includes('png'))   lines.push(`• character .png — ${CHAR.q.filled.join(', ')}`);
+      if(!picks.includes('png') && EXPORT_FORMATS.png){
+        lines.push('');
+        lines.push(
+          'PNG skipped — ' +
+          (CHAR ? (CHAR.gate.allowed ? CHAR.q.why : CHAR.gate.why) : 'no character data on this page')
+        );
+      }
+
+      showPrompt(lines.join('\n'), {okText:'ok', cancel:false, onOK:hidePrompt});
+      setStatus('exported: ' + picks.join(' + '), 'ok');
+    }catch(e){
+      setStatus('export failed','warn');
+      showPrompt('Export failed: ' + (e?.message || e),
+        {okText:'ok', cancel:false, onOK:hidePrompt});
     }finally{
-      // Keep it true through the currently queued download attempts.
-      setTimeout(()=>{ LITE_BATCH=false; },0);
+      if(go){ go.disabled = false; go.classList.remove('busy'); }
+      setTimeout(()=>{ LITE_BATCH = wasLite; }, 0);
     }
   }
 
@@ -1091,15 +1232,17 @@
       'ok'
     );
 
-    showPrompt(
-      `Saved a SillyTavern-importable JSONL chat with ${items.length} messages.\n\n` +
-      'Import it from SillyTavern’s chat-file import control for the character you want this history attached to.',
-      {
-        cancel:false,
-        okText:'ok',
-        onOK:hidePrompt
-      }
-    );
+    if(!LITE_BATCH){
+      showPrompt(
+        `Saved a SillyTavern-importable JSONL chat with ${items.length} messages.\n\n` +
+        'Import it from SillyTavern’s chat-file import control for the character you want this history attached to.',
+        {
+          cancel:false,
+          okText:'ok',
+          onOK:hidePrompt
+        }
+      );
+    }
   }
 
   function exportHTML(){
@@ -2820,36 +2963,44 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
       'muted'
     );
 
-    showPrompt(
-      'Looking up the character…',
-      {
-        ok:false,
-        cancel:false
-      }
-    );
+    if(!LITE_BATCH){
+      showPrompt(
+        'Looking up the character…',
+        {
+          ok:false,
+          cancel:false
+        }
+      );
+    }
 
     try{
       if(!CHAR){
         await captureCharacter(
-          s => updatePrompt(
-            'Looking up the character… ('+s+')',
-            {
-              ok:false,
-              cancel:false
+          s => {
+            if(!LITE_BATCH){
+              updatePrompt(
+                'Looking up the character… ('+s+')',
+                {
+                  ok:false,
+                  cancel:false
+                }
+              );
             }
-          )
+          }
         );
       }
 
       if(!CHAR){
-        updatePrompt(
-          'Could not find character data on this page. Open the character’s profile or a chat with them, then try again.',
-          {
-            cancel:false,
-            okText:'ok',
-            onOK:hidePrompt
-          }
-        );
+        if(!LITE_BATCH){
+          updatePrompt(
+            'Could not find character data on this page. Open the character’s profile or a chat with them, then try again.',
+            {
+              cancel:false,
+              okText:'ok',
+              onOK:hidePrompt
+            }
+          );
+        }
 
         setStatus(
           'character not found',
@@ -2868,14 +3019,16 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
       } = CHAR;
 
       if(!gate.allowed){
-        updatePrompt(
-          `Export blocked: ${gate.why}.`,
-          {
-            cancel:false,
-            okText:'ok',
-            onOK:hidePrompt
-          }
-        );
+        if(!LITE_BATCH){
+          updatePrompt(
+            `Export blocked: ${gate.why}.`,
+            {
+              cancel:false,
+              okText:'ok',
+              onOK:hidePrompt
+            }
+          );
+        }
 
         setStatus(
           'export blocked',
@@ -2886,15 +3039,17 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
       }
 
       if(!q.ok){
-        updatePrompt(
-          `Can't build a character card: ${q.why}.\n\n` +
-          'Open the character’s profile or a chat with them and press “Capture now” first.',
-          {
-            cancel:false,
-            okText:'ok',
-            onOK:hidePrompt
-          }
-        );
+        if(!LITE_BATCH){
+          updatePrompt(
+            `Can't build a character card: ${q.why}.\n\n` +
+            'Open the character’s profile or a chat with them and press “Capture now” first.',
+            {
+              cancel:false,
+              okText:'ok',
+              onOK:hidePrompt
+            }
+          );
+        }
 
         setStatus(
           'no character data',
@@ -2921,13 +3076,15 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
           currentAIName();
       }
 
-      updatePrompt(
-        `Building card for “${card.name}” (${gate.why})…`,
-        {
-          ok:false,
-          cancel:false
-        }
-      );
+      if(!LITE_BATCH){
+        updatePrompt(
+          `Building card for “${card.name}” (${gate.why})…`,
+          {
+            ok:false,
+            cancel:false
+          }
+        );
+      }
 
       let png;
 
@@ -2972,44 +3129,48 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
         'image/png'
       );
 
-      updatePrompt(
-        [
-          `Saved ${safe}.png — SillyTavern v2 card.`,
-          '',
-          `Included: ${q.filled.join(', ')}.`,
-          q.defHidden
-            ? 'The creator hid this character’s definition on CrushOn, so personality, scenario and example dialogue were not available.'
-            : '',
-          `Source: ${source}.`
-        ]
-          .filter(Boolean)
-          .join('\n'),
+      if(!LITE_BATCH){
+        updatePrompt(
+          [
+            `Saved ${safe}.png — SillyTavern v2 card.`,
+            '',
+            `Included: ${q.filled.join(', ')}.`,
+            q.defHidden
+              ? 'The creator hid this character’s definition on CrushOn, so personality, scenario and example dialogue were not available.'
+              : '',
+            `Source: ${source}.`
+          ]
+            .filter(Boolean)
+            .join('\n'),
 
-        {
-          cancel:false,
-          okText:'ok',
-          onOK:hidePrompt
-        }
-      );
+          {
+            cancel:false,
+            okText:'ok',
+            onOK:hidePrompt
+          }
+        );
+      }
 
       setStatus(
         'exported character .png',
         'ok'
       );
     }catch(err){
-      updatePrompt(
-        'Character export failed: ' +
-        (
-          err &&
-          err.message ||
-          err
-        ),
-        {
-          cancel:false,
-          okText:'ok',
-          onOK:hidePrompt
-        }
-      );
+      if(!LITE_BATCH){
+        updatePrompt(
+          'Character export failed: ' +
+          (
+            err &&
+            err.message ||
+            err
+          ),
+          {
+            cancel:false,
+            okText:'ok',
+            onOK:hidePrompt
+          }
+        );
+      }
 
       setStatus(
         'character export failed',
