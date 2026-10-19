@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         CrushOn Exporter v2
 // @namespace    co-export-plus
-// @version      2.2.0
-// @description  Export CrushOn chats/cards and restore avatars by bypassing the broken image resizing proxy.
+// @version      2.3.0
+// @description  Export chats and SillyTavern cards, restore avatars, calibrate speakers, and safely export HTML.
 // @match        https://crushon.ai/*
 // @match        https://www.crushon.ai/*
 // @run-at       document-idle
@@ -339,14 +339,39 @@
   }
   if(document.readyState==='complete' || document.readyState==='interactive') ensureUI();
   else document.addEventListener('DOMContentLoaded', ensureUI, {once:true});
-  try{ new MutationObserver(()=>ensureUI()).observe(document.documentElement||document,{childList:true,subtree:true}); }catch(e){}
-  setTimeout(ensureUI,1200); setInterval(ensureUI,5000);
+  // UI reboots only when CrushOn replaces/removes our toolbar or page body.
+  // Don't scan the full chat DOM on every token, image, or message mutation.
+  let uiRebootPending = false;
+  function scheduleUIReboot(){
+    if(uiRebootPending) return;
+    uiRebootPending = true;
+    requestAnimationFrame(()=>{ uiRebootPending=false; ensureUI(); });
+  }
+  const uiRootObserver = new MutationObserver(changes=>{
+    if(changes.some(m => [...m.removedNodes].some(n =>
+      n.nodeType===1 && (n.id==='coBox' || n.contains?.($('#coBox')) || n.tagName==='BODY')
+    ))) scheduleUIReboot();
+  });
+  try{ uiRootObserver.observe(document.documentElement,{childList:true}); }catch(_){}
+  function observeUIBody(){
+    if(!document.body) return;
+    const toolbar = $('#coBox');
+    const watch = new MutationObserver(changes=>{
+      if(changes.some(m=>[...m.removedNodes].some(n=>n===toolbar || n.contains?.(toolbar)))) scheduleUIReboot();
+    });
+    watch.observe(document.body,{childList:true});
+  }
+  if(document.body) observeUIBody();
+  else document.addEventListener('DOMContentLoaded', observeUIBody, {once:true});
+  setTimeout(scheduleUIReboot,1200);
 
   // ---------- state ----------
   let CHAT_CONTAINER = null;
   const records=[]; const seen=new Set();
   // character profile captured alongside the chat log: {c, id, source, gate, q}
   let CHAR = null;
+  let CAPTURE_SOURCE = 'none';
+  let CAPTURE_NOTE = '';
   let SPEAKER_SIG = (function(){ try{ return coGetValue('co_speaker_sig', null);}catch(_){ return null; } })();
   let AI_NAME_SNAPSHOT = (function(){ try{ return coGetValue('co_ai_name_snapshot', null);}catch(_){ return null; } })();
 
@@ -529,7 +554,12 @@
   }
 
   function setStatus(t,c){ const s=$('#coStatus'); if(s){ s.className=c||'muted'; s.textContent=t; } }
-  function setCounts(split){ const gg=getGroups(); $('#coGroups').textContent=String(gg.length); $('#coMsgs').textContent=String(records.length); if(split!=null) $('#coSplit').textContent=split; }
+  function setCounts(split){
+    const gg=getGroups(), groups=$('#coGroups'), msgs=$('#coMsgs'), role=$('#coSplit');
+    if(groups) groups.textContent=String(gg.length);
+    if(msgs) msgs.textContent=String(records.length);
+    if(split!=null && role) role.textContent=split;
+  }
 
   // Reflect what's actually in hand: a chat log, a character profile, or both.
   function setCardBadge(){
@@ -579,8 +609,8 @@
     p.innerHTML=`<header><b>CrushOn Exporter • Read Me</b><button id=coHelpClose>Close</button></header>
       <div style="padding:12px 14px;font:13px/1.55 system-ui,-apple-system,Segoe UI,Roboto,Arial">
         <p><b>Toggles:</b> PNG / JSONL / TXT pick what the <b>↓</b> button produces. They persist across reloads.</p>
-        <p><b>↓ Export:</b> Recaptures the current chat whenever TXT or JSONL is selected, auto-calibrating [user]/[ai] if possible. Character lookup runs only when PNG is selected. PNG can export by itself from a character page even when no chat is present.</p>
-        <p><b>Formats:</b> .txt and .html carry [user]/[ai] labels; .jsonl imports back into SillyTavern; .png is a SillyTavern v2 card (JSON embedded in the avatar PNG). HTML recaptures the current chat automatically. Public profiles and characters you own can export as PNG; private characters that aren't yours are blocked. If CrushOn returns no real definition, the .png is refused rather than saved with placeholder text. Creators who hide their definition export as description + greeting only, and the card says so.</p>
+        <p><b>↓ Export:</b> Tries a matching authenticated conversation-history request observed in this tab before using visible chat rows. When no history request is discoverable, the chat export may be partial. Unknown timestamps are left blank. Character lookup runs only when PNG is selected.</p>
+        <p><b>Formats:</b> .txt and .html carry [user]/[ai] labels; .jsonl imports back into SillyTavern; .png is a SillyTavern v2 card (JSON embedded in the avatar PNG). HTML recaptures the current chat automatically. Public/unlisted profiles and characters you own can export as PNG; private characters that aren't yours are blocked. If CrushOn returns no real definition, the .png is refused rather than saved with placeholder text. Creators who hide their definition export as description + greeting only, and the card says so.</p>
         <p><b>Restore missing pictures:</b> Enabled by default. Bypasses CrushOn's failing img.cocdn.co transformer for existing cdn.crushon.ai images, including lazy-loaded pictures. Switch it on/off from ⚙. This is a local display fix, not a re-upload.</p>
         <p><b>⚙ More:</b> Status bar, HTML export, manual calibration, clear, resize, read me, character data dump, hide panel.</p>
         <p><b>Drag:</b> Grab the bar's background. Buttons still click normally.</p>
@@ -757,7 +787,7 @@
     const a=featureFromRow(candAI);
     const aiName = extractAiNameFromRow(candAI);
 
-    return { sig:{ user:u, ai:a, aiName: cleanAiNameExact(aiName) } };
+    return { sig:{ user:u, ai:a, aiName: cleanAiNameExact(aiName), scope:location.pathname } };
   }
 
   async function manualCalibrate(){
@@ -780,7 +810,7 @@
         extraText:'Start over',
 
         onOK: async ()=>{
-          SPEAKER_SIG={user:u, ai:a, aiName};
+          SPEAKER_SIG={user:u, ai:a, aiName, manual:true, scope:location.pathname};
           try{ coSetValue('co_speaker_sig', SPEAKER_SIG); }catch{}
           setAIName(aiName);
 
@@ -868,7 +898,8 @@
     const msg = [
       head,
       '',
-      `Chat log: ${nLog} messages (split ${$('#coSplit').textContent}).`,
+      `Chat log: ${nLog} messages (split ${$('#coSplit').textContent}; source: ${CAPTURE_SOURCE}).`,
+      CAPTURE_NOTE,
       captureCharacterProfile ? charSummary() : 'Character profile: not requested.',
       '',
       cardOK
@@ -904,17 +935,245 @@
     });
   }
 
+  // ---------- authenticated conversation-history capture ----------
+  // Prefer the site's own history responses over a virtualized chat DOM.
+  // CrushOn does not publish a stable history API contract: only REPLAY a
+  // matching request already made by the current page, using its exact URL
+  // and the user's existing session. No endpoint or conversation ID guesses.
+  function conversationScopeIds(){
+    const ids=new Set();
+    const path=location.pathname.split('/').filter(Boolean);
+    for(let i=0;i+1<path.length;i++){
+      if(/^(chat|chats|conversation|conversations|session|sessions)$/i.test(path[i])){
+        ids.add(decodeURIComponent(path[i+1]));
+      }
+    }
+    const params=new URLSearchParams(location.search);
+    for(const k of ['chatId','conversationId','sessionId','chat_id','conversation_id','session_id']){
+      const v=params.get(k);
+      if(v) ids.add(v);
+    }
+    return [...ids].filter(x=>x.length>=4);
+  }
+
+  function parseObservedInput(url){
+    try{
+      const raw=new URL(url).searchParams.get('input');
+      return raw ? JSON.parse(raw) : null;
+    }catch(_){return null;}
+  }
+
+  function historyRequestCandidates(){
+    const ids=conversationScopeIds();
+    if(!ids.length || !performance.getEntriesByType) return [];
+    const urls=performance.getEntriesByType('resource')
+      .map(x=>x.name)
+      .filter(Boolean).reverse();
+    const seen=new Set(), found=[];
+    for(const link of urls){
+      if(seen.has(link)) continue;
+      seen.add(link);
+      try{
+        const url=new URL(link);
+        if(url.origin!==location.origin || !url.pathname.startsWith('/api/trpc/')) continue;
+        const procedure=decodeURIComponent(url.pathname.split('/api/trpc/')[1]||'');
+        if(!/^(?:chat|chatroom|message|messages|conversation|conversations|history|room|session)[A-Za-z]*\./i.test(procedure)) continue;
+        if(!/(?:get|list|query|history|messages|fetch)/i.test(procedure)) continue;
+        const input=parseObservedInput(url.href);
+        if(!input) continue;
+        const serialized=JSON.stringify(input);
+        // Accept only requests explicitly scoped to the current page. Do not
+        // accidentally export a different chat included in another tab's UI.
+        if(!ids.some(id=>serialized.includes(JSON.stringify(id)))) continue;
+        found.push({url:url.href,input});
+        if(found.length>=8) break;
+      }catch(_){}
+    }
+    return found;
+  }
+
+  function apiMessageRole(m){
+    if(typeof m?.is_user==='boolean') return m.is_user?'USER':'AI';
+    if(typeof m?.isUser==='boolean') return m.isUser?'USER':'AI';
+    if(typeof m?.is_user_message==='boolean') return m.is_user_message?'USER':'AI';
+    if(typeof m?.isAI==='boolean') return m.isAI?'AI':'USER';
+    const who=m?.role ?? m?.senderType ?? m?.senderRole ?? m?.authorRole ??
+      m?.messageRole ?? m?.sender?.role ?? m?.sender?.type ?? m?.author?.role;
+    const role=String(who??'').trim().toLowerCase();
+    if(/^(user|human|player|me)$/i.test(role)) return 'USER';
+    if(/^(ai|assistant|character|bot|model)$/i.test(role)) return 'AI';
+    return null;
+  }
+
+  function apiMessageBody(m){
+    let v=m?.content ?? m?.message ?? m?.text ?? m?.body ?? m?.messageText;
+    if(v && typeof v==='object'){
+      v=v.text ?? v.content ?? v.body ?? v.message;
+    }
+    if(Array.isArray(v)){
+      v=v.map(x=>typeof x==='string'?x:(x?.text??'')).filter(Boolean).join('\n');
+    }
+    return typeof v==='string' ? v : '';
+  }
+
+  function normalizeHistoryMessages(messages){
+    if(!Array.isArray(messages) || !messages.length) return [];
+    const rows=[];
+    for(const m of messages){
+      if(!m || typeof m!=='object') continue;
+      const who=apiMessageRole(m), content=apiMessageBody(m);
+      if(!who || !content.trim()) continue;
+      // API strings are text unless explicitly marked as HTML; never treat
+      // arbitrary user/model text containing '<' as trusted markup.
+      const html= m?.contentType==='text/html' || m?.format==='html'
+        ? safeExportHtml(content)
+        : escapeHtml(content).replace(/\r?\n/g,'<br>');
+      rows.push({
+        id:String(m.id ?? m.messageId ?? m._id ?? ''),
+        seq:rows.length,
+        who, html,
+        t:parseMessageTime(m.createdAt ?? m.created_at ?? m.sentAt ??
+          m.sendTime ?? m.timestamp ?? m.time ?? m.created ?? m.date)
+      });
+    }
+    // Never mistake an unrelated array for chat history.
+    if(rows.length<2 || rows.length<Math.ceil(messages.length*0.75)) return [];
+    return rows;
+  }
+
+  function extractHistoryPage(response){
+    let best=null;
+    const seen=new Set();
+    function visit(value,depth=0){
+      if(!value || typeof value!=='object' || depth>12 || seen.has(value)) return;
+      seen.add(value);
+      if(Array.isArray(value)){
+        const rows=normalizeHistoryMessages(value);
+        if(rows.length && (!best || rows.length>best.rows.length)){
+          best={rows,meta:null};
+        }
+        if(value.length<100) value.forEach(v=>visit(v,depth+1));
+        return;
+      }
+      for(const [k,v] of Object.entries(value)){
+        if(['messages','history','items','records','edges','nodes','data'].includes(k) && Array.isArray(v)){
+          const arr=k==='edges'?v.map(e=>e?.node??e):v;
+          const rows=normalizeHistoryMessages(arr);
+          if(rows.length && (!best || rows.length>best.rows.length)){
+            best={rows,meta:value};
+          }
+        }
+      }
+      for(const v of Object.values(value)) visit(v,depth+1);
+    }
+    visit(response);
+    return best;
+  }
+
+  function nextHistoryUrl(url,responseMeta){
+    const page=responseMeta?.pageInfo ?? responseMeta?.pagination ?? responseMeta;
+    if(!page || typeof page!=='object') return null;
+    const next=page.nextCursor ?? page.next_cursor ?? page.nextPageCursor;
+    const more=page.hasNextPage ?? page.hasMore ?? page.has_more;
+    let u;
+    try{u=new URL(url);}catch(_){return null;}
+    const value=parseObservedInput(u.href);
+    if(!value || typeof value!=='object') return null;
+    // Existing tRPC batch inputs are in {0:{json:{...}}}; single inputs
+    // can be {json:{...}} or plain input. Keep the original shape.
+    const payload=value?.['0']?.json ?? value?.json ?? value;
+    if(!payload || typeof payload!=='object') return null;
+    if(next!==undefined && next!==null && next!==''){
+      const key=['cursor','before','nextCursor','lastMessageId'].find(k=>Object.hasOwn(payload,k));
+      if(!key) return null;
+      payload[key]=next;
+    }else if(more===true && Number.isInteger(payload.page) && payload.page>=0){
+      payload.page+=1;
+    }else{
+      return null;
+    }
+    u.searchParams.set('input',JSON.stringify(value));
+    return u.href;
+  }
+
+  async function requestHistoryPage(url){
+    const controller=new AbortController();
+    const timeout=setTimeout(()=>controller.abort(),8000);
+    try{
+      const response=await fetch(url,{
+        credentials:'include', cache:'no-store', signal:controller.signal,
+        headers:{accept:'application/json','trpc-accept':'application/json'}
+      });
+      if(!response.ok) return null;
+      return await response.json();
+    }finally{clearTimeout(timeout);}
+  }
+
+  async function captureHistoryFromObservedRequest(){
+    for(const candidate of historyRequestCandidates()){
+      const combined=[], ids=new Set(), visited=new Set();
+      let url=candidate.url;
+      for(let page=0; page<12 && url && !visited.has(url);page++){
+        visited.add(url);
+        let response;
+        try{response=await requestHistoryPage(url);}catch(_){break;}
+        if(!response) break;
+        const found=extractHistoryPage(response);
+        if(!found?.rows?.length) break;
+        for(const row of found.rows){
+          // Dedup by stable server ID when provided; retain repeated text.
+          const key=row.id || `page:${page}:row:${row.seq}`;
+          if(ids.has(key)) continue;
+          ids.add(key);
+          combined.push({...row,seq:combined.length});
+        }
+        url=nextHistoryUrl(url,found.meta);
+      }
+      if(combined.length){
+        if(combined.every(r=>r.t!==null)) combined.sort((a,b)=>a.t-b.t || a.seq-b.seq);
+        return combined;
+      }
+    }
+    return null;
+  }
+
   // ---------- capture ----------
   // Returns true when chat capture completed, false when capture completed but
   // found no messages, and null when the user canceled manual calibration.
   async function captureNow(afterCapture, opts={}){
-    clearCaptured(true);
-    clearCalibration('captureNow');
+    // Keep an explicitly calibrated role signature for this chat. Clearing
+    // exported records must not silently invalidate manual calibration.
+    clearCaptured(true, false);
+    if(SPEAKER_SIG?.scope && SPEAKER_SIG.scope!==location.pathname){
+      clearCalibration('different chat route');
+    }
 
+    // Replays only an existing, same-conversation authenticated history
+    // request seen in this tab. Never fabricate an API endpoint or ID.
+    setStatus('checking accessible conversation history…','muted');
+    try{
+      const history=await captureHistoryFromObservedRequest();
+      if(history?.length){
+        for(const it of history) records.push(it);
+        CAPTURE_SOURCE='CrushOn history API';
+        CAPTURE_NOTE='History API response captured. Older pages are included only when the observed endpoint exposes supported pagination; full-history coverage cannot otherwise be guaranteed.';
+        const u=history.filter(x=>x.who==='USER').length;
+        setCounts(`${u}U/${history.length-u}A`);
+        await finishCapture(afterCapture, opts);
+        return true;
+      }
+    }catch(e){ console.warn('[CrushOn Exporter] history request unavailable:',e); }
+
+    if(!getGroups().length){
+      CAPTURE_SOURCE='none';
+      CAPTURE_NOTE='No rendered chat messages or matching history request were found.';
+      return false;
+    }
     showPrompt('Attempting auto-calibration…',{cancel:false, ok:false});
     await sleep(100);
 
-    const auto=autoCalibrateTry();
+    const auto=(SPEAKER_SIG?.manual && SPEAKER_SIG.scope===location.pathname)
+      ? {sig:SPEAKER_SIG} : autoCalibrateTry();
 
     if(auto){
       SPEAKER_SIG=auto.sig;
@@ -966,7 +1225,7 @@
 
           onOK: async ()=>{
             try{
-              SPEAKER_SIG={user:u, ai:a, aiName};
+              SPEAKER_SIG={user:u, ai:a, aiName, manual:true, scope:location.pathname};
               try{ coSetValue('co_speaker_sig', SPEAKER_SIG); }catch{}
 
               setAIName(aiName);
@@ -1001,31 +1260,31 @@
   }
 
   function fixSkew(items){
-    let u=0,a=0;
-
+    // Re-evaluate all rows, not only chats that looked nearly all USER.
+    // A manual or auto-calibration signature must actually determine roles.
     for(const it of items){
-      if(it.who==='USER') u++;
-      else if(it.who==='AI') a++;
+      it.who = decideFromFeatures(it);
     }
+  }
 
-    if(
-      a<=1 &&
-      u>=3 &&
-      SPEAKER_SIG &&
-      SPEAKER_SIG.ai &&
-      typeof SPEAKER_SIG.ai.right==='boolean'
-    ){
-      const aiSide=SPEAKER_SIG.ai.right;
-
-      for(const it of items){
-        it.who = (it.right===aiSide ? 'AI' : 'USER');
+  function decideFromFeatures(f){
+    if(SPEAKER_SIG?.user && SPEAKER_SIG?.ai){
+      const u=SPEAKER_SIG.user, a=SPEAKER_SIG.ai;
+      // The side is the strongest discriminator when calibration found
+      // distinctly opposed chat bubbles (including bubbles without links).
+      if(typeof u.right==='boolean' && typeof a.right==='boolean' && u.right!==a.right){
+        return f.right===u.right ? 'USER' : 'AI';
       }
+      const us=similarity(f,u), as=similarity(f,a);
+      if(us!==as) return us>as ? 'USER' : 'AI';
     }
+    return f.charLink ? 'AI' : (f.right ? 'USER' : 'AI');
   }
 
   async function doCaptureAfterCalibrated(){
     const items=collectFromDOM();
-
+    CAPTURE_SOURCE='visible DOM';
+    CAPTURE_NOTE='Only currently rendered messages are available; older messages may be missing.';
     fixSkew(items);
 
     let u=0,a=0;
@@ -1036,7 +1295,8 @@
     }
 
     for(const it of items){
-      const key=it.who+'|'+it.html;
+      // Repeated identical messages are valid separate messages.
+      const key=it.id ? 'id:'+it.id : 'seq:'+it.seq;
       if(seen.has(key)) continue;
 
       seen.add(key);
@@ -1051,13 +1311,40 @@
     );
   }
 
-  // --------- role decision (hasCharLink-first) ---------
-  function decideWho(g){
-    const f = featureFromRow(g);
+  // ---------- speaker roles + authentic DOM timestamps ----------
+  function decideWho(g){ return decideFromFeatures(featureFromRow(g)); }
 
-    // Primary rule per request:
-    // if the message has a character link, it's AI; otherwise it's USER.
-    return f.charLink ? 'AI' : 'USER';
+  function parseMessageTime(value){
+    if(value===null || value===undefined || value==='') return null;
+    if(typeof value==='object' && typeof value.toDate==='function') return parseMessageTime(value.toDate());
+    if(value instanceof Date) return Number.isFinite(value.getTime()) ? value.getTime() : null;
+    if(typeof value==='number' || /^\d{10,13}$/.test(String(value))){
+      const n=Number(value), ms=n<1e11 ? n*1000 : n;
+      return Number.isFinite(ms) && ms>=946684800000 && ms<=4102444800000 ? ms : null;
+    }
+    const ms=Date.parse(String(value));
+    return Number.isFinite(ms) ? ms : null;
+  }
+
+  function domMessageTime(row){
+    const nodes=[row,...row.querySelectorAll('time[datetime], [data-timestamp], [data-created-at], [data-sent-at]')];
+    for(const node of nodes){
+      for(const attr of ['datetime','data-timestamp','data-created-at','data-sent-at']){
+        const time=parseMessageTime(node.getAttribute(attr));
+        if(time!==null) return time;
+      }
+    }
+    return null; // Never invent a send time from the moment of export.
+  }
+
+  function orderedRecords(){
+    const items=records.slice();
+    // Only timestamp-sort when *all* entries have authentic timestamps.
+    // Otherwise preserve server order / message order in the DOM.
+    if(items.length && items.every(it=>it.t!==null && Number.isFinite(it.t))){
+      items.sort((a,b)=>a.t-b.t || (a.seq||0)-(b.seq||0));
+    }
+    return items;
   }
 
   function collectFromDOM(){
@@ -1067,13 +1354,11 @@
     for(const g of groups){
       const body=getBlock(g);
       const html=(body.innerHTML||'').trim();
-
       if(!html) continue;
-
       const f=featureFromRow(g);
-
       out.push({
-        t:Date.now(),
+        t:domMessageTime(g),
+        seq:out.length,
         who:decideWho(g),
         html,
         right:f.right,
@@ -1081,15 +1366,16 @@
         nameChip:f.nameChip
       });
     }
-
     return out;
   }
 
   // ---------- clear ----------
-  function clearCaptured(silent=false){
+  function clearCaptured(silent=false, resetCalibration=true){
     records.length=0;
     seen.clear();
     CHAR=null;
+    CAPTURE_SOURCE='none';
+    CAPTURE_NOTE='';
     setCardBadge();
 
     const msgs=$('#coMsgs');
@@ -1101,7 +1387,7 @@
     const split=$('#coSplit');
     if(split) split.textContent='0U/0A';
 
-    clearCalibration('clearCaptured');
+    if(resetCalibration) clearCalibration('clearCaptured');
 
     if(!silent){
       showPrompt(
@@ -1243,20 +1529,7 @@
       // Always recapture chat-dependent formats. Reusing records here can export
       // stale messages after new replies arrive or after CrushOn changes SPA routes.
       if(wantsChat){
-        if(!getGroups().length){
-          for(const fmt of ['txt','jsonl']){
-            const i=picks.indexOf(fmt);
-            if(i>=0){
-              picks.splice(i,1);
-              skipped.push(`${fmt.toUpperCase()} skipped — no chat messages found on this page.`);
-            }
-          }
-          // No chat exists, so don't force the user through pointless calibration.
-          records.length=0;
-          seen.clear();
-          const msgs=$('#coMsgs'); if(msgs) msgs.textContent='0';
-          const split=$('#coSplit'); if(split) split.textContent='0U/0A';
-        }else{
+        {
           setStatus('capturing current chat…','muted');
           const captured = await captureNow(null, {
             captureCharacterProfile:false,
@@ -1350,6 +1623,10 @@
         lines.push(exportedChat
           ? `Exported current chat (${records.length} message${records.length===1?'':'s'}).`
           : 'Export complete.');
+        if(exportedChat){
+          lines.push(`Source: ${CAPTURE_SOURCE}`);
+          lines.push(CAPTURE_NOTE);
+        }
         lines.push(...completed);
       }else{
         lines.push('Nothing was exported.');
@@ -1388,13 +1665,15 @@
       return;
     }
 
-    const items=records.slice().sort((a,b)=>a.t-b.t);
+    const items=orderedRecords();
 
     const lines=[
       '# '+(document.title||'CrushOn Chat'),
       'URL: '+location.href,
       'AI: '+currentAIName(),
       'Exported: '+new Date().toISOString(),
+      'Source: '+CAPTURE_SOURCE,
+      'Coverage: '+CAPTURE_NOTE,
       ''
     ];
 
@@ -1422,7 +1701,7 @@
 
     closeMenus();
 
-    const items=records.slice().sort((a,b)=>a.t-b.t);
+    const items=orderedRecords();
     const aiName=currentAIName() || 'AI';
     const userName='User';
     const exportedAt=new Date().toISOString();
@@ -1432,6 +1711,8 @@
     const rows=[{
       chat_metadata:{
         source:'CrushOn Exporter PLUS',
+        capture_source:CAPTURE_SOURCE,
+        capture_note:CAPTURE_NOTE,
         source_url:location.href,
         imported_from:'crushon.ai',
         exported_at:exportedAt
@@ -1448,7 +1729,8 @@
         name:isUser ? userName : aiName,
         is_user:isUser,
         is_system:false,
-        send_date:new Date(Number(it.t)||Date.now()).toISOString(),
+        // Empty rather than inventing a timestamp at export time.
+        send_date:it.t!==null ? new Date(it.t).toISOString() : '',
         mes:text,
         extra:{}
       });
@@ -1486,17 +1768,59 @@
     }
   }
 
+  function safeExportHtml(markup){
+    // Build an inert tree, then copy only explicitly approved elements and
+    // attributes. Imported chat content is NEVER inserted into the export raw.
+    const parsed=new DOMParser().parseFromString('<div id="co-clean">'+String(markup||'')+'</div>','text/html');
+    const root=parsed.getElementById('co-clean');
+    if(!root) return escapeHtml(stripHTML(markup));
+    const allowed=new Set('p br div span strong b em i u s del strike blockquote pre code ul ol li h1 h2 h3 h4 h5 h6 hr table thead tbody tr th td a img sup sub'.split(' '));
+    const blocked=new Set('script style iframe object embed svg math link meta base form input button textarea select video audio source canvas template noscript'.split(' '));
+    const doc=parsed.createElement('div');
+    function appendSafe(src,dest){
+      for(const child of [...src.childNodes]){
+        if(child.nodeType===Node.TEXT_NODE){
+          dest.appendChild(parsed.createTextNode(child.textContent||''));
+          continue;
+        }
+        if(child.nodeType!==Node.ELEMENT_NODE) continue;
+        const tag=child.localName.toLowerCase();
+        if(blocked.has(tag)) continue;
+        if(!allowed.has(tag)){ appendSafe(child,dest); continue; }
+        const node=parsed.createElement(tag);
+        if(tag==='a'){
+          const raw=child.getAttribute('href')||'';
+          try{
+            const url=new URL(raw,location.origin);
+            if(['http:','https:','mailto:'].includes(url.protocol)){
+              node.setAttribute('href',url.href);
+              node.setAttribute('rel','noopener noreferrer');
+              node.setAttribute('target','_blank');
+            }
+          }catch(_){}
+        }
+        if(tag==='img'){
+          const raw=directImageUrl(child.getAttribute('src')||'');
+          try{
+            const url=new URL(raw,location.origin);
+            if(['https:','http:'].includes(url.protocol)) node.setAttribute('src',url.href);
+          }catch(_){}
+          node.setAttribute('alt',(child.getAttribute('alt')||'').slice(0,200));
+        }
+        if(tag==='th' || tag==='td'){
+          const colspan=Number(child.getAttribute('colspan'));
+          if(Number.isInteger(colspan) && colspan>=1 && colspan<=16) node.setAttribute('colspan',String(colspan));
+        }
+        appendSafe(child,node);
+        dest.appendChild(node);
+      }
+    }
+    appendSafe(root,doc);
+    return doc.innerHTML;
+  }
+
   async function exportHTML(){
     closeMenus();
-
-    if(!getGroups().length){
-      showPrompt(
-        'No chat messages found on this page.',
-        {cancel:false, okText:'ok', onOK:hidePrompt}
-      );
-      setStatus('no chat to export','warn');
-      return false;
-    }
 
     setStatus('capturing current chat for HTML…','muted');
     const captured = await captureNow(null, {
@@ -1515,7 +1839,7 @@
       return false;
     }
 
-    const items=records.slice().sort((a,b)=>a.t-b.t);
+    const items=orderedRecords();
 
     const head=`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
 :root{color-scheme:dark light}
@@ -1525,13 +1849,13 @@ article.msg{position:relative;background:#121212;border:1px solid #333;border-ra
 article.msg .cap{position:absolute;top:-10px;left:12px;font:11px/1 monospace;letter-spacing:.3px;background:#1c1c1c;border:1px solid #3a3a3a;border-radius:8px;padding:3px 6px}
 article.msg .cap.user{background:#291a2d;border-color:#5a3a66}article.msg .cap.ai{background:#182028;border-color:#334655}
 article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;border:1px solid #2a2a2a;border-radius:6px;padding:2px 4px}
-</style></head><body><div class="chat"><div class="title"># ${escapeHtml(document.title||'CrushOn Chat')}</div><div class="meta">URL: ${escapeHtml(location.href)}<br>AI: ${escapeHtml(currentAIName())}<br>Exported: ${new Date().toISOString()}</div>`;
+</style></head><body><div class="chat"><div class="title"># ${escapeHtml(document.title||'CrushOn Chat')}</div><div class="meta">URL: ${escapeHtml(location.href)}<br>AI: ${escapeHtml(currentAIName())}<br>Exported: ${new Date().toISOString()}<br>Source: ${escapeHtml(CAPTURE_SOURCE)}<br>Coverage: ${escapeHtml(CAPTURE_NOTE)}</div>`;
 
     const body=items.map(it=>{
       const capCls=(it.who==='USER')?'user':'ai';
       const capTxt='['+escapeHtml(labelFor(it.who))+']';
 
-      return `<article class="msg"><div class="cap ${capCls}">${capTxt}</div><div class="body">${it.html}</div></article>`;
+      return `<article class="msg"><div class="cap ${capCls}">${capTxt}</div><div class="body">${safeExportHtml(it.html)}</div></article>`;
     }).join('');
 
     const html=head+body+'</div></body></html>';
@@ -2052,6 +2376,15 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
       );
     }
 
+    // Owner-only details are not part of normal character lookups. The
+    // server is the authority: if it denies a request we never retry with
+    // forged ownership or merge any unauthorized data.
+    const me=await currentUserId();
+    if(me && (!acc || !characterCreatorId(acc) || characterCreatorId(acc)===me)){
+      step('queryOwnCharacter');
+      await attempt('character.queryOwnCharacter',{characterId:id});
+    }
+
     step('queryRecentCharacters');
 
     try{
@@ -2294,14 +2627,14 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
       ''
     ).toLowerCase();
 
+    const isUnlisted = vis === 1 || visStr === '1' || visStr === 'unlisted';
     const isPrivate =
-      c?.isPublic === false ||
-      c?.public === false ||
       c?.isPrivate === true ||
       c?.private === true ||
-      /^(private|draft|unlisted|hidden)$/.test(visStr) ||
-      vis === 1 ||
-      vis === 2;
+      vis === 2 ||
+      visStr === '2' ||
+      /^(private|draft|hidden)$/.test(visStr) ||
+      (!isUnlisted && (c?.isPublic === false || c?.public === false));
 
     if(isPrivate){
       return {
@@ -2312,7 +2645,7 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
 
     return {
       allowed:true,
-      why:'public profile'
+      why:isUnlisted ? 'unlisted profile accessible to you' : 'public profile'
     };
   }
 
@@ -2902,15 +3235,13 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
       !f.scenario &&
       !f.mes_example;
 
-    const defHidden =
-      defMissing &&
-      (
-        c?.definitionVisibility === 2 ||
-        (
-          fromApi &&
-          f.description
-        )
-      );
+    const explicitHidden =
+      c?.definitionVisibility === 2 ||
+      c?.definitionVisibility === '2' ||
+      c?.definitionHidden === true ||
+      c?.hideDefinition === true ||
+      c?.isDefinitionHidden === true;
+    const defHidden = defMissing && explicitHidden;
 
     return {
       fromApi,
