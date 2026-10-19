@@ -1,15 +1,99 @@
-# CrushOnAI-Chat-Exporter
-Capture chats and export as TXT/HTML.<br>
+# CrushOn Exporter PLUS
 
-**V1.6 - Updated for latest site change.**<br>
-**V1.5 - Now easier, cleaner, and includes a clear separation between "AI" and "User" messages.**<br>
-**Only tested in Firefox (PC+Android) with ViolentMonkey**
+A userscript for exporting [CrushOn.AI](https://crushon.ai/) conversations and characters, with SillyTavern-compatible output, better chat capture, and a workaround for broken character images.
 
-Instructions: <br>
-Install script to Violentmonkey<br>
-Enter the chat you wish to download<br>
-Click "Capture now" and wait for confirmation. Then Proceed to export as either .TXT/HTML.<br>
-I've included a "read me" section in the script to explain other features and manual functions in the event of an error.<br>
+**Current version:** 2.3.0  
+**Based on:** [CookieLoverAnon's CrushOnAI Chat Exporter](https://github.com/CookieLoverAnon/CrushOnAI-Chat-Exporter)
 
+> **Note:** This is an independently modified fork, not an official CrushOn.AI tool. CrushOn's site and APIs can change without notice. Some functions are best-effort and may require further updates.
 
-I created this script for myself because I wanted to be able to export my conversations, feed them into ChatGPT, and get a summary to improve the quality of my chats. I added the HTML function for those who wish to preserve their memories off-site. I hope this helps you.<br>
+## Features
+
+### Export conversations
+
+- **TXT:** Readable plain-text transcripts with `[user]` and `[ai]` labels.
+- **HTML:** Offline-friendly, dark-themed transcripts that preserve supported message formatting. Exported message HTML is sanitized to remove scripts, event handlers, and other unsafe embedded elements.
+- **SillyTavern JSONL:** Chat files in SillyTavern's JSON Lines format, with speaker roles and available original send times.
+- **History-aware capture:** Attempts to reuse an authenticated, conversation-specific history request already observed in the browser. When that is not available, falls back to the messages currently rendered on the page. Exports disclose which source was used and warn when coverage may be incomplete.
+- **Speaker identification:** Automatic calibration, plus manual speaker calibration when the page layout is ambiguous. A manually selected signature is used when classifying rendered messages.
+
+### Export characters
+
+- **SillyTavern V2 character cards:** Generates `.png` files with embedded character data, including any available description, personality, scenario, greeting, and example dialogue.
+- **Avatar handling:** Fetches the character image directly when possible, converts it to PNG, and uses a generated placeholder if the avatar cannot be retrieved.
+- **Profile lookup:** Tries CrushOn's existing character APIs, including an owner-specific lookup when authorized, rather than relying solely on visible page text.
+- **Visibility-aware:** Allows public and unlisted character exports, as well as characters belonging to your account. Private characters belonging to others are blocked. Unavailable or explicitly hidden definition fields are not fabricated.
+- **Data inspection:** Includes a **Dump character data** tool for troubleshooting.
+
+### Restore missing images
+
+The script works around a known kind of image-loading failure in which CrushOn's image-transforming proxy (`img.cocdn.co`) cannot serve an image that is still available from `cdn.crushon.ai`.
+
+It rewrites matching image URLs locally, including images loaded after scrolling or changing pages. The fix is **on by default** and can be toggled in **⚙ → Restore missing pictures**. It doesn't change, delete, or reupload images on your CrushOn account.
+
+This only helps when the original image is still accessible. It cannot recover files that are actually gone, nor can it fix unrelated image URLs.
+
+### Interface
+
+A compact draggable toolbar offers **PNG**, **JSONL**, and **TXT** output toggles, a **↓** export button, and a **⚙** settings menu. The settings menu also includes HTML export, the optional status bar, manual calibration, UI resizing, character-data diagnostics, and a hide-panel option. Preferences and panel placement are saved locally when the userscript environment permits it.
+
+## Installation
+
+Install a userscript manager in a supported browser, then install the JavaScript userscript from this fork:
+
+**[`CrushOn_Exporter_v2.3.0_Image_Fix.user.js`](./CrushOn_Exporter_v2.3.0_Image_Fix.user.js)**
+
+- **Desktop Firefox:** Use a userscript manager such as Violentmonkey, then install or paste the contents of the `.user.js` file.
+- **iPhone Safari:** Use a Safari userscript extension such as [Userscripts](https://github.com/quoid/userscripts) and enable it for `crushon.ai`. Save the script as a `.user.js` file in the extension's configured script directory.
+- **Other browsers:** A compatible userscript manager may work, but behavior depends on the browser and the manager's supported APIs.
+
+The script matches `https://crushon.ai/*` and `https://www.crushon.ai/*`. Reload CrushOn after installation.
+
+If you've received the source as a `.md` file, **the contents are JavaScript**. Save the source as a `.user.js` file before attempting to run it; the `.md` extension itself won't execute as a userscript.
+
+## Usage
+
+1. Open a CrushOn conversation or character page.
+2. In the floating toolbar, select **TXT**, **JSONL**, and/or **PNG**. The selected formats persist between visits.
+3. Click **↓** to capture the current conversation and/or character, then export the selected formats.
+4. For an HTML transcript, open **⚙ → Export .html (bonus)**.
+5. If message speakers were mislabeled, use **⚙ → Calibrate speakers (fallback)** and select one user bubble followed by one AI bubble.
+6. If images are missing, check **⚙ → Restore missing pictures**; it is enabled by default.
+
+TXT and JSONL exports require chat messages. PNG export requires an accessible character record with usable data. On a character-only page, chat formats may be skipped; on a chat-only page, the character export may be unavailable.
+
+### Output formats
+
+| Format | Purpose | Notes |
+| --- | --- | --- |
+| `.txt` | Readable conversation backup | Includes capture source and coverage note. |
+| `.html` | Styled offline reading | Message HTML is sanitized; linked external images may still require network access. |
+| `.jsonl` | SillyTavern chat import | Preserves genuine timestamps when available; leaves unknown times empty. |
+| `.png` | SillyTavern V2 character card | Includes data actually accessible to your session; may contain a placeholder avatar. |
+
+## Current limitations
+
+- **Full history is not guaranteed.** The exporter recognizes and replays some authenticated history requests already made by the page; it does not know a guaranteed, complete history endpoint. Pagination is attempted only when the response exposes a supported mechanism, and currently has a bounded number of pages.
+- **DOM fallback may be partial.** If CrushOn renders only a portion of a long conversation, only that portion is captured when history retrieval is unavailable.
+- **Conversation branches are not exported as a tree.** There is currently no automatic “export all branches” function. An export may reflect only the active branch/path or whatever the observed history response exposes.
+- **Character definitions can be limited.** Information not supplied by CrushOn cannot be reconstructed. This includes fields hidden from the current account.
+- **Browser support varies.** Mobile userscript managers may not implement all `GM_*` APIs. In particular, character-avatar downloading and file saving can behave differently on iOS; a placeholder avatar or alternate download path may be used.
+- **Site changes can break selectors and API lookups.** A valid-looking download does not necessarily mean the entire conversation was captured; check its **Source** and **Coverage** note.
+
+## Privacy and access
+
+The script runs in your browser using your existing CrushOn session. It does not require credentials to be entered into the script, and it does not operate a separate collection service. Its export and diagnostic features may retrieve data from CrushOn's own APIs and image-hosting services. **Exports are local files, but they can contain private conversations or character details, so handle them accordingly.**
+
+The character exporter does not bypass server-side access permissions. It does not create missing or restricted character definitions.
+
+## Attribution
+
+**Original work:** [CookieLoverAnon / CrushOnAI-Chat-Exporter](https://github.com/CookieLoverAnon/CrushOnAI-Chat-Exporter), which provided the foundation for chat capture, speaker calibration, and TXT/HTML export.
+
+**This fork:** Extends the original with SillyTavern chat and character-card output, API-assisted character and history retrieval, image restoration, expanded UI controls, export safety improvements, and additional compatibility handling.
+
+Please retain attribution to the original author when redistributing modifications. This README does not assert a license that the upstream repository has not explicitly provided.
+
+## Disclaimer
+
+This project is unofficial and is not affiliated with, endorsed by, or maintained by CrushOn.AI or SillyTavern. Use it only for data you are authorized to access, and follow applicable platform terms.
