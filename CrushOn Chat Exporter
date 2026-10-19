@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         CrushOn Exporter v2
 // @namespace    co-export-plus
-// @version      2.1.1
-// @description  Capture CrushOn chats with [user]/[ai] labels. Export TXT/HTML/SillyTavern JSONL, plus SillyTavern-compatible character card .png.
+// @version      2.2.0
+// @description  Export CrushOn chats/cards and restore avatars by bypassing the broken image resizing proxy.
 // @match        https://crushon.ai/*
 // @match        https://www.crushon.ai/*
 // @run-at       document-idle
@@ -16,6 +16,31 @@
 
 (function () {
   'use strict';
+
+  // ---------- cross-manager settings ----------
+  // Older script managers expose synchronous GM_getValue/GM_setValue.
+  // Safari Userscripts may provide only asynchronous GM.* methods, so use
+  // origin-local storage when those synchronous APIs are absent.
+  const CO_STORE_PREFIX = 'co-exporter-v2:';
+
+  function coGetValue(key, fallback){
+    try {
+      if(typeof GM_getValue === 'function') return GM_getValue(key, fallback);
+    }catch(_){}
+    try {
+      const stored = localStorage.getItem(CO_STORE_PREFIX + key);
+      return stored === null ? fallback : JSON.parse(stored);
+    }catch(_) { return fallback; }
+  }
+
+  function coSetValue(key, value){
+    try {
+      if(typeof GM_setValue === 'function') return GM_setValue(key, value);
+    }catch(_){}
+    try {
+      localStorage.setItem(CO_STORE_PREFIX + key, JSON.stringify(value));
+    }catch(_){}
+  }
 
   // ---------- CSS ----------
   const CSS = `
@@ -70,8 +95,89 @@
   const escapeHtml = s => String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
   const stripHTML = s => { const d=document.createElement('div'); d.innerHTML=s; return (d.textContent||'').replace(/\r/g,'').replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim(); };
 
+  // ---------- CrushOn CDN image proxy bypass ----------
+  // CrushOn sometimes asks img.cocdn.co to resize an image that still exists
+  // at cdn.crushon.ai. Rewrite ONLY these known proxy URLs to the original.
+  // Runs locally; does not replace or re-upload the character's stored image.
+  const IMAGE_ATTRS = [
+    'srcset', 'src', 'data-srcset', 'data-src', 'data-original',
+    'data-lazy-srcset', 'data-lazy-src', 'poster', 'style'
+  ];
+  const IMAGE_PROXY_RE = /(?:https?:)?\/\/img\.cocdn\.co\/_image\/(?:cover|optimize)\/((?:https?:)?\/\/cdn\.crushon\.ai\/[^\s"'()<>,]+)/gi;
+  const IMAGE_SELECTOR = IMAGE_ATTRS.map(
+    a => '[' + a + '*="img.cocdn.co"]'
+  ).join(',');
+
+  // q and w belong to the image transformer rather than the stored picture.
+  function directImageUrl(url){
+    if(typeof url !== 'string' || !url.includes('img.cocdn.co')) return url;
+    return url.replace(IMAGE_PROXY_RE, (proxy, embedded) => {
+      try {
+        const unescaped = decodeURIComponent(embedded);
+        const direct = new URL(unescaped.startsWith('//') ? 'https:' + unescaped : unescaped);
+        if(direct.protocol !== 'https:' || direct.hostname !== 'cdn.crushon.ai') return proxy;
+        direct.searchParams.delete('q');
+        direct.searchParams.delete('w');
+        return direct.href;
+      }catch(_){ return proxy; }
+    });
+  }
+
+  let IMAGE_FIX_ENABLED = coGetValue('co_image_proxy_fix', true) !== false;
+
+  function fixImageElement(element){
+    if(!IMAGE_FIX_ENABLED || !element || element.nodeType !== 1) return;
+    for(const attr of IMAGE_ATTRS){
+      const current = element.getAttribute(attr);
+      if(!current || !current.includes('img.cocdn.co')) continue;
+      const fixed = directImageUrl(current);
+      if(fixed !== current) element.setAttribute(attr, fixed);
+    }
+  }
+
+  function fixImageTree(root){
+    if(!IMAGE_FIX_ENABLED || !root) return;
+    if(root.nodeType === 1) fixImageElement(root);
+    if(typeof root.querySelectorAll === 'function'){
+      for(const child of root.querySelectorAll(IMAGE_SELECTOR)) fixImageElement(child);
+    }
+  }
+
+  function setImageFixEnabled(on){
+    IMAGE_FIX_ENABLED = !!on;
+    coSetValue('co_image_proxy_fix', IMAGE_FIX_ENABLED);
+    updateToolsMenuLabels();
+    if(IMAGE_FIX_ENABLED) fixImageTree(document.documentElement);
+    // Disabling leaves successfully restored images intact; subsequent proxy
+    // URLs from navigation/lazy loading are no longer rewritten.
+  }
+
+  function startImageFix(){
+    const root = document.documentElement;
+    if(!root) return;
+    // The browser may already have loaded the page (document-idle). Catch both
+    // existing pictures and React/Next.js's later DOM and lazy-load updates.
+    const observer = new MutationObserver(changes => {
+      if(!IMAGE_FIX_ENABLED) return;
+      for(const change of changes){
+        if(change.type === 'attributes') fixImageElement(change.target);
+        else for(const added of change.addedNodes) fixImageTree(added);
+      }
+    });
+    observer.observe(root, {
+      attributes: true,
+      attributeFilter: IMAGE_ATTRS,
+      childList: true,
+      subtree: true
+    });
+    fixImageTree(root);
+  }
+
+  if(document.documentElement) startImageFix();
+  else document.addEventListener('DOMContentLoaded', startImageFix, {once:true});
+
   // ---------- scale ----------
-  let UI_SCALE = (function(){ try{ const v=GM_getValue('co_ui_scale', 1); return (typeof v==='number' && v>0)? v : 1; }catch(_){ return 1; } })();
+  let UI_SCALE = (function(){ try{ const v=coGetValue('co_ui_scale', 1); return (typeof v==='number' && v>0)? v : 1; }catch(_){ return 1; } })();
   function applyScale(k){
     UI_SCALE = k;
     ['#coBox','#coHUD','#coTab','#coPrompt','#coHelp','#coMenuExport','#coMenuTools'].forEach(sel=>{
@@ -80,9 +186,11 @@
   }
 
   // ---------- status bar toggle ----------
-  let HUD_ENABLED = (function(){ try{ return !!GM_getValue('co_hud_enabled', false); }catch(_){ return false; } })();
+  let HUD_ENABLED = (function(){ try{ return !!coGetValue('co_hud_enabled', false); }catch(_){ return false; } })();
   function updateToolsMenuLabels(){
     const btn=$('#coToggleHUD'); if(btn) btn.textContent = HUD_ENABLED ? 'Hide status bar' : 'Show status bar';
+    const imgBtn=$('#coToggleImages');
+    if(imgBtn) imgBtn.textContent = 'Restore missing pictures: ' + (IMAGE_FIX_ENABLED ? 'ON' : 'OFF');
   }
   function updateHUDVisibility(){
     const hud=$('#coHUD'); const box=$('#coBox');
@@ -92,7 +200,7 @@
   }
   function setHUDEnabled(on){
     HUD_ENABLED=!!on;
-    try{ GM_setValue('co_hud_enabled', HUD_ENABLED); }catch(_){}
+    try{ coSetValue('co_hud_enabled', HUD_ENABLED); }catch(_){}
     updateHUDVisibility();
     updateToolsMenuLabels();
   }
@@ -125,9 +233,9 @@
     el.style.top  = top  + window.scrollY + 'px';
     el.style.right='auto'; el.style.bottom='auto';
   }
-  function savePos(key, el){ try{ const r = el.getBoundingClientRect(); GM_setValue(key, {left: r.left + window.scrollX, top: r.top + window.scrollY}); }catch{} }
+  function savePos(key, el){ try{ const r = el.getBoundingClientRect(); coSetValue(key, {left: r.left + window.scrollX, top: r.top + window.scrollY}); }catch{} }
   function restorePos(key, el){
-    try{ const v = GM_getValue(key, null);
+    try{ const v = coGetValue(key, null);
       if(v && typeof v.left==='number' && typeof v.top==='number'){
         el.style.left = v.left + 'px'; el.style.top  = v.top  + 'px'; el.style.right='auto'; el.style.bottom='auto'; return true;
       }
@@ -239,18 +347,18 @@
   const records=[]; const seen=new Set();
   // character profile captured alongside the chat log: {c, id, source, gate, q}
   let CHAR = null;
-  let SPEAKER_SIG = (function(){ try{ return GM_getValue('co_speaker_sig', null);}catch(_){ return null; } })();
-  let AI_NAME_SNAPSHOT = (function(){ try{ return GM_getValue('co_ai_name_snapshot', null);}catch(_){ return null; } })();
+  let SPEAKER_SIG = (function(){ try{ return coGetValue('co_speaker_sig', null);}catch(_){ return null; } })();
+  let AI_NAME_SNAPSHOT = (function(){ try{ return coGetValue('co_ai_name_snapshot', null);}catch(_){ return null; } })();
 
   // Format toggles for the top bar
   const EXPORT_FORMATS = {
-    png:   (()=>{ try{ return GM_getValue('co_fmt_png',   true); }catch(_){ return true; } })(),
-    jsonl: (()=>{ try{ return GM_getValue('co_fmt_jsonl', true); }catch(_){ return true; } })(),
-    txt:   (()=>{ try{ return GM_getValue('co_fmt_txt',   true); }catch(_){ return true; } })(),
+    png:   (()=>{ try{ return coGetValue('co_fmt_png',   true); }catch(_){ return true; } })(),
+    jsonl: (()=>{ try{ return coGetValue('co_fmt_jsonl', true); }catch(_){ return true; } })(),
+    txt:   (()=>{ try{ return coGetValue('co_fmt_txt',   true); }catch(_){ return true; } })(),
   };
   function setFormat(key, on){
     EXPORT_FORMATS[key] = !!on;
-    try{ GM_setValue('co_fmt_'+key, EXPORT_FORMATS[key]); }catch(_){}
+    try{ coSetValue('co_fmt_'+key, EXPORT_FORMATS[key]); }catch(_){}
     const b = $('#coBtn_'+key);
     if(b) b.classList.toggle('on', EXPORT_FORMATS[key]);
   }
@@ -323,8 +431,14 @@
     btnHudToggle.textContent = HUD_ENABLED ? 'Hide status bar' : 'Show status bar';
     btnHudToggle.onclick = ()=>setHUDEnabled(!HUD_ENABLED);
 
+    const btnImgToggle = document.createElement('button');
+    btnImgToggle.id = 'coToggleImages';
+    btnImgToggle.textContent = 'Restore missing pictures: ' + (IMAGE_FIX_ENABLED ? 'ON' : 'OFF');
+    btnImgToggle.onclick = ()=>setImageFixEnabled(!IMAGE_FIX_ENABLED);
+
     mExp.append(
       btnHudToggle,
+      btnImgToggle,
       mk('Export .html (bonus)', exportHTML),
       divider(),
       mk('Calibrate speakers (fallback)', manualCalibrate),
@@ -467,6 +581,7 @@
         <p><b>Toggles:</b> PNG / JSONL / TXT pick what the <b>↓</b> button produces. They persist across reloads.</p>
         <p><b>↓ Export:</b> Recaptures the current chat whenever TXT or JSONL is selected, auto-calibrating [user]/[ai] if possible. Character lookup runs only when PNG is selected. PNG can export by itself from a character page even when no chat is present.</p>
         <p><b>Formats:</b> .txt and .html carry [user]/[ai] labels; .jsonl imports back into SillyTavern; .png is a SillyTavern v2 card (JSON embedded in the avatar PNG). HTML recaptures the current chat automatically. Public profiles and characters you own can export as PNG; private characters that aren't yours are blocked. If CrushOn returns no real definition, the .png is refused rather than saved with placeholder text. Creators who hide their definition export as description + greeting only, and the card says so.</p>
+        <p><b>Restore missing pictures:</b> Enabled by default. Bypasses CrushOn's failing img.cocdn.co transformer for existing cdn.crushon.ai images, including lazy-loaded pictures. Switch it on/off from ⚙. This is a local display fix, not a re-upload.</p>
         <p><b>⚙ More:</b> Status bar, HTML export, manual calibration, clear, resize, read me, character data dump, hide panel.</p>
         <p><b>Drag:</b> Grab the bar's background. Buttons still click normally.</p>
       </div>`;
@@ -523,14 +638,14 @@
       cancelText:'cancel',
       extraText:'default',
       extra:true,
-      onOK:()=>{ try{ GM_setValue('co_ui_scale', UI_SCALE); }catch{} hidePrompt(); },
+      onOK:()=>{ try{ coSetValue('co_ui_scale', UI_SCALE); }catch{} hidePrompt(); },
       onCancel:()=>{ applyScale(prev); hidePrompt(); },
       onExtra:()=>{
         const s=$('#coScaleSlider');
         if(s){ s.value='100'; }
         setPct(100);
         applyScale(1);
-        try{ GM_setValue('co_ui_scale', 1); }catch{}
+        try{ coSetValue('co_ui_scale', 1); }catch{}
       }
     });
 
@@ -611,9 +726,9 @@
   function setAIName(name){
     const n = cleanAiNameExact(name||'AI');
     SPEAKER_SIG = Object.assign({}, SPEAKER_SIG||{}, { aiName: n });
-    try{ GM_setValue('co_speaker_sig', SPEAKER_SIG); }catch{}
+    try{ coSetValue('co_speaker_sig', SPEAKER_SIG); }catch{}
     AI_NAME_SNAPSHOT = n;
-    try{ GM_setValue('co_ai_name_snapshot', AI_NAME_SNAPSHOT); }catch{}
+    try{ coSetValue('co_ai_name_snapshot', AI_NAME_SNAPSHOT); }catch{}
   }
 
   // ---------- calibration ----------
@@ -621,8 +736,8 @@
     SPEAKER_SIG = null;
     AI_NAME_SNAPSHOT = null;
     try{
-      GM_setValue('co_speaker_sig', null);
-      GM_setValue('co_ai_name_snapshot', null);
+      coSetValue('co_speaker_sig', null);
+      coSetValue('co_ai_name_snapshot', null);
     }catch{}
     if(src) setStatus(`calibration reset (${src})`,'warn');
   }
@@ -666,7 +781,7 @@
 
         onOK: async ()=>{
           SPEAKER_SIG={user:u, ai:a, aiName};
-          try{ GM_setValue('co_speaker_sig', SPEAKER_SIG); }catch{}
+          try{ coSetValue('co_speaker_sig', SPEAKER_SIG); }catch{}
           setAIName(aiName);
 
           updatePrompt('Capturing…',{cancel:false, ok:false});
@@ -803,7 +918,7 @@
 
     if(auto){
       SPEAKER_SIG=auto.sig;
-      try{ GM_setValue('co_speaker_sig', SPEAKER_SIG); }catch{}
+      try{ coSetValue('co_speaker_sig', SPEAKER_SIG); }catch{}
 
       setAIName(auto.sig.aiName||'AI');
 
@@ -852,7 +967,7 @@
           onOK: async ()=>{
             try{
               SPEAKER_SIG={user:u, ai:a, aiName};
-              try{ GM_setValue('co_speaker_sig', SPEAKER_SIG); }catch{}
+              try{ coSetValue('co_speaker_sig', SPEAKER_SIG); }catch{}
 
               setAIName(aiName);
 
@@ -2486,10 +2601,10 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
       );
     }
 
-    const abs = new URL(
+    const abs = directImageUrl(new URL(
       url,
       location.href
-    ).href;
+    ).href);
 
     try{
       const r = await fetch(
