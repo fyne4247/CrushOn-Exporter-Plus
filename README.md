@@ -41,7 +41,7 @@ A compact draggable toolbar offers **PNG**, **JSONL**, and **TXT** output toggle
 
 Install a userscript manager in a supported browser, then install the JavaScript userscript from this fork:
 
-**[`CrushOn_Exporter_v2.3.0_Image_Fix.user.js`](./CrushOn_Exporter_v2.3.0_Image_Fix.user.js)**
+**[`CrushOn-Exporter-Plus.user.js`](./CrushOn-Exporter-Plus.user.js)**
 
 - **Desktop Firefox:** Use a userscript manager such as Violentmonkey, then install or paste the contents of the `.user.js` file.
 - **iPhone Safari:** Use a Safari userscript extension such as [Userscripts](https://github.com/quoid/userscripts) and enable it for `crushon.ai`. Save the script as a `.user.js` file in the extension's configured script directory.
