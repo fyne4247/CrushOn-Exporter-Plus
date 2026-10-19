@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CrushOn Exporter v2
 // @namespace    co-export-plus
-// @version      2.3.0
+// @version      2.4.0
 // @description  Export chats and SillyTavern cards, restore avatars, calibrate speakers, and safely export HTML.
 // @match        https://crushon.ai/*
 // @match        https://www.crushon.ai/*
@@ -11,6 +11,7 @@
 // @grant        GM_getValue
 // @grant        GM_download
 // @grant        GM_xmlhttpRequest
+// @grant        GM_info
 // @connect      *
 // ==/UserScript==
 
@@ -372,6 +373,9 @@
   let CHAR = null;
   let CAPTURE_SOURCE = 'none';
   let CAPTURE_NOTE = '';
+  let LAST_TREE_NOTE = '';
+  // ERP/SillyTavern capture facts for chat_metadata.crushon (see exportSillyTavernJSONL).
+  let CAPTURE_META = {capture:'none', complete:false, pages_fetched:0, stopped_early:false};
   let SPEAKER_SIG = (function(){ try{ return coGetValue('co_speaker_sig', null);}catch(_){ return null; } })();
   let AI_NAME_SNAPSHOT = (function(){ try{ return coGetValue('co_ai_name_snapshot', null);}catch(_){ return null; } })();
 
@@ -465,6 +469,9 @@
       btnHudToggle,
       btnImgToggle,
       mk('Export .html (bonus)', exportHTML),
+      mk('This chat: all branches (.zip)', ()=>exportAllBranches('zip')),
+      mk('This chat: all branches (separate files)', ()=>exportAllBranches('separate')),
+      mk('ALL chats: every branch (.zip)', exportAllChats),
       divider(),
       mk('Calibrate speakers (fallback)', manualCalibrate),
       mk('Clear captured', ()=>clearCaptured(false)),
@@ -477,6 +484,7 @@
         restorePosOrCenter('co_pos_help', h);
       }),
       mk('Dump character data', probeCharacterData),
+      mk('Dump history response', dumpHistoryResponse),
       divider(),
       mk('Hide panel', ()=>hidePanel(true))
     );
@@ -609,10 +617,13 @@
     p.innerHTML=`<header><b>CrushOn Exporter • Read Me</b><button id=coHelpClose>Close</button></header>
       <div style="padding:12px 14px;font:13px/1.55 system-ui,-apple-system,Segoe UI,Roboto,Arial">
         <p><b>Toggles:</b> PNG / JSONL / TXT pick what the <b>↓</b> button produces. They persist across reloads.</p>
-        <p><b>↓ Export:</b> Tries a matching authenticated conversation-history request observed in this tab before using visible chat rows. When no history request is discoverable, the chat export may be partial. Unknown timestamps are left blank. Character lookup runs only when PNG is selected.</p>
+        <p><b>↓ Export:</b> Reads the branch shown on the page from CrushOn's message tree when it can be identified; otherwise tries a history request observed in this tab, then visible chat rows. When no history request is discoverable, the chat export may be partial. Unknown timestamps are left blank. Character lookup runs only when PNG is selected.</p>
         <p><b>Formats:</b> .txt and .html carry [user]/[ai] labels; .jsonl imports back into SillyTavern; .png is a SillyTavern v2 card (JSON embedded in the avatar PNG). HTML recaptures the current chat automatically. Public/unlisted profiles and characters you own can export as PNG; private characters that aren't yours are blocked. If CrushOn returns no real definition, the .png is refused rather than saved with placeholder text. Creators who hide their definition export as description + greeting only, and the card says so.</p>
+        <p><b>What gets exported:</b> <b>↓</b> = this chat, the branch on screen. <b>⚙ → This chat: all branches</b> = every branch of this chat. <b>⚙ → ALL chats</b> = every branch of every chat.</p>
+        <p><b>Export all branches:</b> ⚙ → reads CrushOn's full message tree (read-only) and saves one SillyTavern .jsonl per branch (root → leaf, original order and timestamps) plus manifest.json describing forks and shared ancestry. The .zip option is one download (best on phones); "separate files" saves each file individually. Missing or partial history is reported, never filled in.</p>
+        <p><b>Export ALL chats:</b> ⚙ → lists every chat in your Recent list and saves every branch of every chat into one .zip (a folder per character + manifest.json). Requests go one at a time about every 2 s; you can stop at any point and keep what was collected. Best on desktop: phones may run out of memory on large archives.</p>
         <p><b>Restore missing pictures:</b> Enabled by default. Bypasses CrushOn's failing img.cocdn.co transformer for existing cdn.crushon.ai images, including lazy-loaded pictures. Switch it on/off from ⚙. This is a local display fix, not a re-upload.</p>
-        <p><b>⚙ More:</b> Status bar, HTML export, manual calibration, clear, resize, read me, character data dump, hide panel.</p>
+        <p><b>⚙ More:</b> Status bar, HTML export, export all branches, export all chats, manual calibration, clear, resize, read me, character data dump, history dump, hide panel.</p>
         <p><b>Drag:</b> Grab the bar's background. Buttons still click normally.</p>
       </div>`;
     p.querySelector('#coHelpClose').onclick=()=>{ unpinWindow('co_help', p); p.style.display='none'; };
@@ -1028,10 +1039,18 @@
       const html= m?.contentType==='text/html' || m?.format==='html'
         ? safeExportHtml(content)
         : escapeHtml(content).replace(/\r?\n/g,'<br>');
+      const isHtml=m?.contentType==='text/html' || m?.format==='html';
+      const parentId=m.parent ?? m.parentId ?? m.parent_id ?? null;
       rows.push({
         id:String(m.id ?? m.messageId ?? m._id ?? ''),
         seq:rows.length,
         who, html,
+        ...(isHtml ? {} : {raw:content}),
+        crushon:{
+          message_id:String(m.id ?? m.messageId ?? m._id ?? '') || null,
+          parent_message_id:parentId!=null && parentId!=='' ? String(parentId) : null,
+          edited:m.isEdited===true || m.is_edited===true
+        },
         t:parseMessageTime(m.createdAt ?? m.created_at ?? m.sentAt ??
           m.sendTime ?? m.timestamp ?? m.time ?? m.created ?? m.date)
       });
@@ -1112,8 +1131,8 @@
   async function captureHistoryFromObservedRequest(){
     for(const candidate of historyRequestCandidates()){
       const combined=[], ids=new Set(), visited=new Set();
-      let url=candidate.url;
-      for(let page=0; page<12 && url && !visited.has(url);page++){
+      let url=candidate.url, page=0;
+      for(; page<12 && url && !visited.has(url);page++){
         visited.add(url);
         let response;
         try{response=await requestHistoryPage(url);}catch(_){break;}
@@ -1131,10 +1150,942 @@
       }
       if(combined.length){
         if(combined.every(r=>r.t!==null)) combined.sort((a,b)=>a.t-b.t || a.seq-b.seq);
+        // Completeness is unknowable for this generic path: never claim it.
+        combined.meta={capture:'observed_request', complete:false, pages_fetched:page, stopped_early:page>=12 && !!url};
         return combined;
       }
     }
     return null;
+  }
+
+  // ---------- full conversation tree, branch + bulk export ----------
+  // Verified against crushon.ai (Oct 2026). The chat page loads its history
+  // with a POST tRPC call, chat.getMessageHistory, input
+  //   {conversationId, voiceAudioOption:{voiceId, withAudio, withNarration}, pager?}
+  // The result holds the WHOLE message tree, including branches the UI is not
+  // showing, as `mapping`:
+  //   {<id>: {id, parent, children:[ids], role, content, createdAt, isEdited,
+  //           messageType, …}}
+  // role 1 = user, 2 = character, 3 = empty system anchor at the root;
+  // messageType 5 = the greeting. Later pages are requested by echoing the
+  // returned `pager`; an empty page ends the history. Branch switching in the
+  // UI is client-side only. The chat list comes from the same calls CrushOn's
+  // inbox uses: character.queryRecentCharacters + chat.listConversations.
+  // Everything here only READS. Requests go one at a time through a pacing
+  // gate with back-off on 429/5xx so bulk runs don't hammer the site.
+  // This section reads only. It never sends, edits, deletes or switches anything.
+  const TREE_PROC = 'chat.getMessageHistory';
+  const TREE_MAX_PAGES = 25;
+  const SCRIPT_VERSION = (()=>{ try{ return GM_info.script.version; }catch(_){ return '2.4.0'; } })();
+
+  // ---- request pacing ----
+  const PACE = { last:0, minGap:400, jitter:0, cancelled:false };
+  function setPace(minGap, jitter){ PACE.minGap=minGap; PACE.jitter=jitter||0; }
+  async function paceWait(){
+    const gap=PACE.minGap + Math.random()*PACE.jitter;
+    const wait=PACE.last + gap - Date.now();
+    if(wait>0) await sleep(wait);
+    PACE.last=Date.now();
+  }
+  function isRetryable(res){ return res.status===0 || res.status===429 || res.status===502 || res.status===503 || res.status===504; }
+
+  // One paced tRPC request with retries. method 'GET' (query) or 'POST'.
+  async function trpcCall(proc, input, method){
+    let attempt=0;
+    for(;;){
+      if(PACE.cancelled) return {ok:false, status:0, error:'cancelled', cancelled:true};
+      await paceWait();
+      const res=await trpcOnce(proc, input, method);
+      if(res.ok || !isRetryable(res) || attempt>=3) return res;
+      const backoff=(res.retryAfter ? res.retryAfter*1000 : 8000*Math.pow(2,attempt));
+      attempt++;
+      console.warn(`[CrushOn Exporter] ${proc} → ${res.status||res.error}; retry ${attempt} in ${Math.round(backoff/1000)}s`);
+      await sleep(Math.min(backoff, 90000));
+    }
+  }
+
+  async function trpcOnce(proc, input, method){
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(), 25000);
+    try{
+      const batch=JSON.stringify({0:{json:input}});
+      const url=`${location.origin}/api/trpc/${proc}?batch=1` + (method==='GET' ? '&input='+encodeURIComponent(batch) : '');
+      const r=await fetch(url,{
+        method:method==='GET' ? 'GET' : 'POST', credentials:'include', cache:'no-store', signal:controller.signal,
+        headers:{'content-type':'application/json','trpc-accept':'application/json',accept:'application/json'},
+        body:method==='GET' ? undefined : batch
+      });
+      let j=null;
+      try{ j=await r.json(); }catch(_){}
+      const slot=Array.isArray(j) ? j[0] : j;
+      if(!r.ok || !slot || slot.error){
+        const msg=slot?.error?.json?.message || slot?.error?.message || ('HTTP '+r.status);
+        const ra=Number(r.headers.get('retry-after'));
+        return {ok:false, status:r.status, error:String(msg), retryAfter:Number.isFinite(ra)&&ra>0 ? ra : null};
+      }
+      return {ok:true, status:r.status, data:slot?.result?.data?.json ?? slot?.result?.data ?? null};
+    }catch(e){
+      return {ok:false, status:0, error:e?.name==='AbortError' ? 'request timed out' : String(e?.message||e)};
+    }finally{ clearTimeout(timer); }
+  }
+
+  function chatRouteIds(){
+    const m=location.pathname.match(/\/character\/([^/?#]+)\/chat\/([^/?#]+)/i);
+    if(!m) return null;
+    try{
+      return {characterId:decodeURIComponent(m[1]), conversationId:decodeURIComponent(m[2])};
+    }catch(_){ return null; }
+  }
+
+  // Fetch every page of a conversation's message tree. Returns
+  // {ok, nodes:Map, memory:[], complete, stoppedEarly, pages, notes:[], server, raw:[]}
+  // or {ok:false, error}.
+  async function fetchConversationTree(conversationId, onStep, keepRaw){
+    const nodes=new Map(), notes=[], raw=[];
+    let memory=[], pager=null, complete=false, pages=0, server=null;
+
+    while(pages<TREE_MAX_PAGES){
+      onStep && onStep(`reading message tree, page ${pages+1}…`);
+      const input={conversationId, voiceAudioOption:{voiceId:'', withAudio:false, withNarration:false}};
+      if(pager) input.pager=pager;
+      const res=await trpcCall(TREE_PROC, input, 'POST');
+      pages++;
+      if(keepRaw) raw.push({request:input, response:res.ok ? res.data : {error:res.error, status:res.status}});
+
+      if(!res.ok){
+        if(pages===1) return {ok:false, error:`${TREE_PROC} unavailable (${res.error})`, cancelled:!!res.cancelled, raw};
+        notes.push(`Page ${pages} of the history failed (${res.error}); older messages may be missing.`);
+        break;
+      }
+
+      const d=res.data;
+      const map=d && d.mapping;
+      if(!map || typeof map!=='object' || Array.isArray(map)){
+        if(pages===1) return {ok:false, error:`${TREE_PROC} returned no message tree ("mapping"). CrushOn may have changed its API`, raw};
+        notes.push(`Page ${pages} had no message tree; older messages may be missing.`);
+        break;
+      }
+
+      let added=0;
+      for(const [k,v] of Object.entries(map)){
+        if(!v || typeof v!=='object') continue;
+        const id=String(v.id ?? k);
+        if(!nodes.has(id)){ nodes.set(id, v); added++; }
+      }
+      if(Array.isArray(d.memoryMessages)) memory=memory.concat(d.memoryMessages);
+      server={
+        hasHistory:d.hasHistory ?? null,
+        historyMessageLimit:d.historyMessageLimit ?? null,
+        pager:d.pager && typeof d.pager==='object'
+          ? {offset:d.pager.offset ?? null, count:d.pager.count ?? null, total:d.pager.total ?? null}
+          : null
+      };
+
+      const more=d.hasHistory===true || (d.nextCursor!==null && d.nextCursor!==undefined && d.nextCursor!=='');
+      if(!added || !more){ complete=true; break; }
+      if(!d.pager || typeof d.pager!=='object'){
+        notes.push('CrushOn reported older history but exposed no pager to request it; older messages may be missing.');
+        break;
+      }
+      if(pager && JSON.stringify(d.pager)===JSON.stringify(pager)){
+        notes.push('History pager stopped advancing; older messages may be missing.');
+        break;
+      }
+      pager=d.pager;
+    }
+
+    if(!complete && pages>=TREE_MAX_PAGES){
+      notes.push(`Stopped after ${TREE_MAX_PAGES} history pages; older messages may be missing.`);
+    }
+    if(memory.length){
+      notes.push(`CrushOn returned ${memory.length} "memory" message(s) (carried-over context outside the tree); they open every branch file, flagged memory:true.`);
+    }
+    return {ok:true, nodes, memory, complete, stoppedEarly:!complete, pages, notes, server, raw};
+  }
+
+  function treeRole(m){
+    const r=m?.role;
+    if(r===1 || r==='1') return 'USER';
+    if(r===2 || r==='2') return 'AI';
+    if(r===3 || r==='3') return 'SYSTEM';
+    return apiMessageRole(m);
+  }
+
+  function nodeText(m){
+    return typeof m?.content==='string' ? m.content : apiMessageBody(m);
+  }
+
+  // Empty system anchors (CrushOn's tree root) are structural, not messages.
+  function isEmittedNode(m){
+    return !(treeRole(m)==='SYSTEM' && !String(nodeText(m)).trim());
+  }
+
+  function nodeTime(m){
+    return parseMessageTime(m?.createdAt ?? m?.created_at ?? m?.timestamp ?? null);
+  }
+
+  // Inferred from CrushOn's data: AI alternatives are regenerations; a user
+  // alternative flagged isEdited came from editing; otherwise "make branch".
+  function altKind(m){
+    const who=treeRole(m);
+    if(who==='AI') return 'regen';
+    if(who==='USER') return m?.isEdited===true ? 'edit' : 'branch';
+    return 'branch';
+  }
+
+  // Turn the raw node map into ordered branches. Child order follows the
+  // server's `children` arrays (CrushOn's own order); a node's `parent` field is
+  // treated as authoritative. Nothing is invented: gaps are reported as flags.
+  function analyzeTree(nodes){
+    const warnings=[];
+    const parentOf=id=>{
+      const p=nodes.get(id)?.parent;
+      return (p===null || p===undefined || p==='') ? null : String(p);
+    };
+    const byTime=(a,b)=>((nodeTime(nodes.get(a))??0)-(nodeTime(nodes.get(b))??0)) || (a<b?-1:a>b?1:0);
+
+    const children=new Map();
+    const missingChildren=new Map();
+    for(const id of nodes.keys()){ children.set(id, []); }
+    for(const [id,m] of nodes){
+      const listed=Array.isArray(m.children) ? m.children.map(String) : [];
+      for(const c of listed){
+        if(!nodes.has(c)){
+          if(!missingChildren.has(id)) missingChildren.set(id, []);
+          missingChildren.get(id).push(c);
+        }else if(parentOf(c)===id){
+          if(!children.get(id).includes(c)) children.get(id).push(c);
+        }else{
+          warnings.push(`Message ${c} is listed under ${id} but names ${parentOf(c)||'no parent'} as its parent; kept under its own parent.`);
+        }
+      }
+    }
+    const unlisted=[];
+    for(const id of nodes.keys()){
+      const p=parentOf(id);
+      if(p && nodes.has(p) && !children.get(p).includes(id)) unlisted.push(id);
+    }
+    unlisted.sort(byTime).forEach(id=>children.get(parentOf(id)).push(id));
+    if(unlisted.length) warnings.push(`${unlisted.length} message(s) were not listed by their parent; appended in time order.`);
+
+    const roots=[...nodes.keys()].filter(id=>parentOf(id)===null).sort(byTime);
+    const detached=[...nodes.keys()].filter(id=>{ const p=parentOf(id); return p && !nodes.has(p); }).sort(byTime);
+    if(detached.length) warnings.push(`${detached.length} message chain(s) reference a parent that CrushOn did not return; exported as detached branches flagged "incomplete_ancestry".`);
+    if(roots.length>1) warnings.push(`The tree has ${roots.length} separate roots.`);
+
+    // Iterative DFS → one branch per leaf.
+    const depth=new Map(), branches=[], visited=new Set();
+    for(const start of [...roots, ...detached]){
+      const stack=[[start, [start]]];
+      while(stack.length){
+        const [id, path]=stack.pop();
+        if(visited.has(id)){ warnings.push(`Cycle or duplicate reference at message ${id}; skipped.`); continue; }
+        visited.add(id);
+        depth.set(id, path.length-1);
+        const kids=children.get(id).filter(c=>!visited.has(c));
+        if(!kids.length){
+          branches.push({
+            leaf:id, path,
+            detachedRoot:detached.includes(start),
+            truncatedTail:missingChildren.has(id) || (children.get(id).length>0)
+          });
+          continue;
+        }
+        for(let i=kids.length-1;i>=0;i--) stack.push([kids[i], path.concat(kids[i])]);
+      }
+    }
+    const unreached=[...nodes.keys()].filter(id=>!visited.has(id));
+    if(unreached.length) warnings.push(`${unreached.length} message(s) could not be placed in the tree (cyclic references) and were left out.`);
+    for(const [id,list] of missingChildren){
+      warnings.push(`Message ${id} lists ${list.length} child message(s) that CrushOn did not return.`);
+    }
+
+    const forks=[...nodes.keys()].filter(id=>visited.has(id) && children.get(id).length>1);
+    const pad=Math.max(2, String(branches.length).length);
+    branches.forEach((b,i)=>{
+      b.number=i+1;
+      b.id='branch-'+String(i+1).padStart(pad,'0');
+      b.forkPoints=[];
+      for(let k=0;k<b.path.length-1;k++){
+        const kids=children.get(b.path[k]);
+        if(kids.length>1){
+          b.forkPoints.push({message_id:b.path[k], depth:k, choice:kids.indexOf(b.path[k+1])+1, of:kids.length, chosen_message_id:b.path[k+1], kind:altKind(nodes.get(b.path[k+1]))});
+        }
+      }
+    });
+    // Shared ancestry: longest common prefix with any earlier branch = parent branch.
+    branches.forEach((b,i)=>{
+      let best=null;
+      for(let j=0;j<i;j++){
+        const o=branches[j].path; let n=0;
+        while(n<o.length && n<b.path.length && o[n]===b.path[n]) n++;
+        if(n && (!best || n>best.nodes)) best={
+          branch_id:branches[j].id,
+          nodes:n,
+          jsonl_messages:b.path.slice(0,n).filter(id=>isEmittedNode(nodes.get(id))).length,
+          diverges_after_message_id:b.path[n-1],
+          first_unique_message_id:b.path[n] ?? null
+        };
+      }
+      b.sharedPrefix=best;
+      b.forkKind=best && best.first_unique_message_id ? altKind(nodes.get(best.first_unique_message_id)) : null;
+    });
+    const nodeBranches=new Map();
+    branches.forEach(b=>b.path.forEach(id=>{
+      if(!nodeBranches.has(id)) nodeBranches.set(id, []);
+      nodeBranches.get(id).push(b.id);
+    }));
+
+    let newest=null;
+    for(const b of branches){
+      const t=nodeTime(nodes.get(b.leaf));
+      if(t!==null && (!newest || t>newest.t)) newest={b, t};
+    }
+
+    return {branches, forks, roots, detached, children, depth, nodeBranches, missingChildren, warnings, newestLeaf:newest?.b.leaf ?? null};
+  }
+
+  // Which branch is the page showing? Compares rendered message text with each
+  // branch. Returns a leaf id only for a clear winner, otherwise null.
+  function renderedLeaf(nodes, branches){
+    const key=s=>String(s||'').replace(/\{\{(?:user|char)\}\}/gi,'').replace(/\(edited\)\s*$/i,'').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,'').slice(0,80);
+    let dom;
+    try{ dom=getGroups().map(g=>key(getBlock(g).textContent)).filter(Boolean); }catch(_){ return null; }
+    if(!dom.length || !branches.length) return null;
+    const scored=branches.map(b=>{
+      const keys=b.path.map(id=>nodes.get(id)).filter(m=>m && String(nodeText(m)).trim()).map(m=>key(nodeText(m)));
+      const set=new Set(keys);
+      let hits=0; dom.forEach(x=>{ if(set.has(x)) hits++; });
+      let tail=0;
+      for(let i=1;i<=Math.min(keys.length, dom.length);i++){
+        if(keys[keys.length-i]===dom[dom.length-i]) tail++; else break;
+      }
+      return {leaf:b.leaf, hits, tail, score:tail*100000+hits};
+    }).sort((a,b)=>b.score-a.score);
+    const top=scored[0], second=scored[1];
+    if(top.tail<1 || top.hits/dom.length<0.6) return null;
+    if(second && second.score===top.score) return null;
+    return top.leaf;
+  }
+
+  function exportAIName(){
+    const n=currentAIName();
+    if(n && n!=='AI') return n;
+    return cleanAiNameExact(document.querySelector('meta[property="og:title"]')?.content || document.title || 'AI');
+  }
+
+  function safeFilePart(s, fallback){
+    // Readable, filesystem-safe, deterministic.
+    return String(s||'').replace(/[\\/:*?"<>|\u0000-\u001f]+/g,'_').replace(/\s+/g,' ').trim().replace(/^\.+/,'').slice(0,48) || fallback;
+  }
+
+  function isoOrBlank(t){ return t!==null && t!==undefined && Number.isFinite(t) ? new Date(t).toISOString() : ''; }
+
+  // CrushOn's "memory" messages: real user/character messages returned beside
+  // the tree (no parent links, all stamped at the chat's creation). They are the
+  // context the chat started from, so every branch file opens with them.
+  function memoryRows(fetched){
+    return (fetched.memory||[]).filter(m=>m && typeof m==='object').map(m=>({id:String(m.id ?? ''), m}));
+  }
+  function forkIndexOf(b, fetched){
+    return b.sharedPrefix ? memoryRows(fetched).length + b.sharedPrefix.jsonl_messages : null;
+  }
+
+  // Per-message ERP/SillyTavern fields shared by every API-based export.
+  function crushonMessageExtra(m, id, tree){
+    const t=nodeTime(m);
+    const sibs=m.parent!=null && tree ? tree.children.get(String(m.parent)) : null;
+    const who=treeRole(m);
+    const isGreeting=m.messageType===5 || m.messageType==='5';
+    return {
+      message_id:id,
+      parent_message_id:m.parent!=null && m.parent!=='' ? String(m.parent) : null,
+      created_at:isoOrBlank(t),
+      time_source:t!==null ? 'server' : 'none',
+      edited:m.isEdited===true,
+      ...(isGreeting ? {greeting:true} : {}),
+      role:m.role ?? null,
+      message_type:m.messageType ?? null,
+      ...(sibs && sibs.length>1 ? {alternative:{index:sibs.indexOf(id)+1, of:sibs.length, kind:altKind(m)}} : {}),
+      ...(tree && (tree.children.get(id)||[]).length>1 ? {branch_point:true} : {}),
+      ...(who ? {} : {unknown_role:true}),
+      ...(Array.isArray(m.extendedContents) && m.extendedContents.length ? {extended_contents:m.extendedContents.length} : {})
+    };
+  }
+
+  // One SillyTavern JSONL chat for one root→leaf path.
+  function branchJsonl(b, ctx){
+    const {nodes, tree, aiName, route, exportedAt, fetched, renderedLeafId, sourceUrl}=ctx;
+    const treeComplete=fetched.complete && !tree.detached.length && !tree.missingChildren.size;
+    const branchComplete=treeComplete && !b.detachedRoot && !b.truncatedTail;
+    const firstTime=b.path.map(id=>nodeTime(nodes.get(id))).find(t=>t!==null);
+    const header={
+      user_name:'unused',
+      character_name:'unused',
+      create_date:isoOrBlank(firstTime ?? null),
+      chat_metadata:{
+        source:'CrushOn Exporter PLUS',
+        capture_source:'CrushOn history API (chat.getMessageHistory, full message tree)',
+        capture_note:branchComplete
+          ? `Branch ${b.number} of ${tree.branches.length}. Complete: CrushOn returned the whole tree for this chat.`
+          : `Branch ${b.number} of ${tree.branches.length}. INCOMPLETE: CrushOn's history had gaps; see crushon.warnings.`,
+        source_url:sourceUrl,
+        imported_from:'crushon.ai',
+        exported_at:exportedAt,
+        crushon:{
+          exporter_version:SCRIPT_VERSION,
+          character_id:route.characterId,
+          chat_id:route.conversationId,
+          ...(ctx.chatName ? {chat_name:ctx.chatName} : {}),
+          capture:'message_tree',
+          complete:branchComplete,
+          pages_fetched:fetched.pages,
+          stopped_early:!!fetched.stoppedEarly,
+          branch_id:b.id,
+          branch_number:b.number,
+          branch_count:tree.branches.length,
+          parent_branch_id:b.sharedPrefix?.branch_id ?? null,
+          fork_index:forkIndexOf(b, fetched),
+          fork_kind:b.forkKind,
+          fork_kind_basis:b.forkKind ? 'inferred: AI alternative = regen; user alternative with isEdited = edit; otherwise branch' : null,
+          divergence_message_id:b.sharedPrefix?.first_unique_message_id ?? null,
+          leaf_message_id:b.leaf,
+          memory_messages:memoryRows(fetched).length,
+          rendered_in_page:renderedLeafId===null || renderedLeafId===undefined ? null : renderedLeafId===b.leaf,
+          newest_leaf:tree.newestLeaf===b.leaf,
+          fork_points:b.forkPoints,
+          incomplete_ancestry:b.detachedRoot,
+          truncated_tail:b.truncatedTail,
+          ...(branchComplete ? {} : {warnings:tree.warnings.concat(fetched.notes)})
+        }
+      }
+    };
+    const rows=[header];
+    let unknownRoles=0;
+    for(const {id, m} of memoryRows(fetched)){
+      const who=treeRole(m);
+      if(!who) unknownRoles++;
+      const t=nodeTime(m);
+      rows.push({
+        name:who==='USER' ? 'User' : (who==='AI' ? aiName : 'System'),
+        is_user:who==='USER',
+        is_system:who==='SYSTEM' || !who,
+        send_date:isoOrBlank(t),
+        mes:String(nodeText(m)||''),
+        extra:{crushon:{
+          message_id:id || null, parent_message_id:null,
+          created_at:isoOrBlank(t), time_source:t!==null ? 'server' : 'none',
+          edited:m.isEdited===true, memory:true,
+          role:m.role ?? null, context_type:m.contextType ?? null,
+          ...(who ? {} : {unknown_role:true})
+        }}
+      });
+    }
+    for(const id of b.path){
+      const m=nodes.get(id);
+      if(!isEmittedNode(m)) continue;
+      const who=treeRole(m);
+      if(!who) unknownRoles++;
+      const isUser=who==='USER';
+      const row={
+        name:isUser ? 'User' : (who==='AI' ? aiName : 'System'),
+        is_user:isUser,
+        is_system:who==='SYSTEM' || !who,
+        send_date:isoOrBlank(nodeTime(m)),
+        mes:String(nodeText(m)||''),       // verbatim server text
+        extra:{crushon:crushonMessageExtra(m, id, tree)}
+      };
+      // Regenerated character replies → standard SillyTavern swipes.
+      const sibs=m.parent!=null ? (tree.children.get(String(m.parent))||[]) : [];
+      const aiSibs=sibs.filter(s=>treeRole(nodes.get(s))==='AI');
+      if(who==='AI' && aiSibs.length>1 && aiSibs.length===sibs.length){
+        row.swipes=aiSibs.map(s=>String(nodeText(nodes.get(s))||''));
+        row.swipe_id=aiSibs.indexOf(id);
+        row.swipe_info=aiSibs.map(s=>({send_date:isoOrBlank(nodeTime(nodes.get(s))), extra:{crushon:{message_id:s}}}));
+      }
+      rows.push(row);
+    }
+    return {text:rows.map(r=>JSON.stringify(r)).join('\n'), messages:rows.length-1, unknownRoles, complete:branchComplete};
+  }
+
+  function branchFileName(charName, chatId, branchId){
+    return `${safeFilePart(charName,'character')} - ${safeFilePart(chatId,'chat')} - ${branchId}.jsonl`;
+  }
+
+  // Build every branch file for one chat from an already-fetched tree.
+  function buildChatBranchFiles(fetched, ctxBase){
+    const tree=analyzeTree(fetched.nodes);
+    const ctx={...ctxBase, nodes:fetched.nodes, tree, fetched};
+    const files=tree.branches.map(b=>{
+      const j=branchJsonl(b, ctx);
+      return {
+        name:branchFileName(ctx.aiName, ctx.route.conversationId, b.id),
+        data:j.text, messages:j.messages, unknownRoles:j.unknownRoles, complete:j.complete, branch:b
+      };
+    });
+    return {tree, files, ctx};
+  }
+
+  function chatManifestEntries(files, ctx, folder){
+    return files.map(f=>({
+      file:folder+f.name,
+      character_id:ctx.route.characterId,
+      character_name:ctx.aiName,
+      chat_id:ctx.route.conversationId,
+      ...(ctx.chatName ? {chat_name:ctx.chatName} : {}),
+      branch_id:f.branch.id,
+      parent_branch_id:f.branch.sharedPrefix?.branch_id ?? null,
+      fork_index:forkIndexOf(f.branch, ctx.fetched),
+      fork_kind:f.branch.forkKind,
+      leaf_message_id:f.branch.leaf,
+      messages:f.messages,
+      complete:f.complete,
+      newest_leaf:ctx.tree.newestLeaf===f.branch.leaf,
+      rendered_in_page:ctx.renderedLeafId===null || ctx.renderedLeafId===undefined ? null : ctx.renderedLeafId===f.branch.leaf
+    }));
+  }
+
+  // Detailed tree description for a single chat (Export all branches).
+  function buildBranchManifest(ctx, files){
+    const {nodes, tree, fetched, route, aiName, exportedAt, renderedLeafId}=ctx;
+    const roleCount={USER:0, AI:0, SYSTEM:0, unknown:0};
+    for(const m of nodes.values()) roleCount[treeRole(m)||'unknown']++;
+    const nodeList=[], listed=new Set();
+    for(const b of tree.branches) for(const id of b.path){
+      if(listed.has(id)) continue;
+      listed.add(id);
+      const m=nodes.get(id);
+      nodeList.push({
+        id,
+        parent:m.parent!=null ? String(m.parent) : null,
+        children:tree.children.get(id)||[],
+        role:treeRole(m) || 'unknown',
+        message_type:m.messageType ?? null,
+        created_at:isoOrBlank(nodeTime(m)),
+        edited:m.isEdited===true,
+        depth:tree.depth.get(id) ?? null,
+        content_chars:String(nodeText(m)||'').length,
+        branches:tree.nodeBranches.get(id)||[]
+      });
+    }
+    return {
+      format:'crushon-exporter-plus/branch-tree',
+      format_version:2,
+      exporter_version:SCRIPT_VERSION,
+      exported_at:exportedAt,
+      source_url:ctx.sourceUrl,
+      character_id:route.characterId,
+      chat_id:route.conversationId,
+      character_name:aiName,
+      capture:{
+        procedure:TREE_PROC,
+        pages_fetched:fetched.pages,
+        stopped_early:!!fetched.stoppedEarly,
+        complete:fetched.complete && !tree.detached.length && !tree.missingChildren.size,
+        server:fetched.server,
+        memory_messages:fetched.memory.length,
+        notes:fetched.notes
+      },
+      counts:{
+        nodes:nodes.size,
+        user_messages:roleCount.USER,
+        character_messages:roleCount.AI,
+        system_nodes:roleCount.SYSTEM,
+        unknown_role:roleCount.unknown,
+        roots:tree.roots.length,
+        detached_chains:tree.detached.length,
+        fork_points:tree.forks.length,
+        branches:tree.branches.length
+      },
+      rendered_branch:renderedLeafId ? (tree.branches.find(b=>b.leaf===renderedLeafId)?.id ?? null) : null,
+      rendered_branch_note:renderedLeafId
+        ? 'Matched by comparing the messages rendered in the page with each branch.'
+        : 'Could not confidently tell which branch the page is showing; no branch is marked as rendered.',
+      files:chatManifestEntries(files, ctx, ''),
+      branches:tree.branches.map((b,i)=>({
+        id:b.id,
+        number:b.number,
+        file:files[i].name,
+        messages:files[i].messages,
+        complete:files[i].complete,
+        leaf_message_id:b.leaf,
+        leaf_created_at:isoOrBlank(nodeTime(nodes.get(b.leaf))),
+        newest_leaf:tree.newestLeaf===b.leaf,
+        rendered_in_page:renderedLeafId===null ? null : renderedLeafId===b.leaf,
+        parent_branch_id:b.sharedPrefix?.branch_id ?? null,
+        fork_index:forkIndexOf(b, fetched),
+        fork_kind:b.forkKind,
+        shared_prefix:b.sharedPrefix,
+        fork_points:b.forkPoints,
+        incomplete_ancestry:b.detachedRoot,
+        truncated_tail:b.truncatedTail
+      })),
+      forks:tree.forks.slice()
+        .sort((a,b)=>(tree.depth.get(a)??0)-(tree.depth.get(b)??0))
+        .map(id=>({
+          message_id:id,
+          role:treeRole(nodes.get(id)) || 'unknown',
+          depth:tree.depth.get(id) ?? null,
+          created_at:isoOrBlank(nodeTime(nodes.get(id))),
+          alternatives:(tree.children.get(id)||[]).map((c,k)=>({
+            choice:k+1,
+            message_id:c,
+            role:treeRole(nodes.get(c)) || 'unknown',
+            kind:altKind(nodes.get(c)),
+            created_at:isoOrBlank(nodeTime(nodes.get(c))),
+            branches:tree.nodeBranches.get(c)||[]
+          }))
+        })),
+      nodes:nodeList,
+      warnings:tree.warnings.concat(fetched.notes)
+    };
+  }
+
+  // Minimal store-only ZIP writer (no compression; UTF-8 names).
+  function makeZip(entries){
+    const enc=new TextEncoder();
+    const now=new Date();
+    const dosTime=((now.getHours()<<11)|(now.getMinutes()<<5)|(now.getSeconds()>>1))&0xFFFF;
+    const dosDate=(((now.getFullYear()-1980)<<9)|((now.getMonth()+1)<<5)|now.getDate())&0xFFFF;
+    const chunks=[], central=[];
+    let offset=0;
+    const u16=n=>[n&255,(n>>>8)&255];
+    const u32=n=>[n&255,(n>>>8)&255,(n>>>16)&255,(n>>>24)&255];
+    for(const e of entries){
+      const name=enc.encode(e.name);
+      const data=typeof e.data==='string' ? enc.encode(e.data) : e.data;
+      const crc=crc32(data);
+      const local=new Uint8Array([
+        ...u32(0x04034b50), ...u16(20), ...u16(0x0800), ...u16(0), ...u16(dosTime), ...u16(dosDate),
+        ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(name.length), ...u16(0)
+      ]);
+      chunks.push(local, name, data);
+      central.push(new Uint8Array([
+        ...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(0x0800), ...u16(0), ...u16(dosTime), ...u16(dosDate),
+        ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(name.length), ...u16(0), ...u16(0),
+        ...u16(0), ...u16(0), ...u32(0), ...u32(offset)
+      ]), name);
+      offset+=local.length+name.length+data.length;
+    }
+    if(entries.length>65535 || offset>0xFFFFFFFF) throw new Error('Export too large for a single ZIP file.');
+    const cdSize=central.reduce((n,c)=>n+c.length,0);
+    const end=new Uint8Array([
+      ...u32(0x06054b50), ...u16(0), ...u16(0), ...u16(entries.length), ...u16(entries.length),
+      ...u32(cdSize), ...u32(offset), ...u16(0)
+    ]);
+    // A Blob avoids copying everything into one giant array (helps mobile).
+    return new Blob(chunks.concat(central,[end]), {type:'application/zip'});
+  }
+
+  // ---------- Export all branches (current chat) ----------
+  async function buildBranchExport(onStep){
+    const route=chatRouteIds();
+    if(!route) return {ok:false, error:'Open a specific CrushOn conversation (…/character/<id>/chat/<conversation id>) first.'};
+    setPace(400, 200);
+    PACE.cancelled=false;
+    const fetched=await fetchConversationTree(route.conversationId, onStep);
+    if(!fetched.ok) return {ok:false, error:fetched.error};
+    if(!fetched.nodes.size) return {ok:false, error:'CrushOn returned an empty message tree for this conversation.'};
+
+    onStep && onStep('analysing branches…');
+    const pre=analyzeTree(fetched.nodes);
+    if(!pre.branches.length) return {ok:false, error:'No branch could be built from the returned messages.'};
+    const ctxBase={
+      route,
+      aiName:exportAIName(),
+      exportedAt:new Date().toISOString(),
+      sourceUrl:`${location.origin}/character/${encodeURIComponent(route.characterId)}/chat/${encodeURIComponent(route.conversationId)}`,
+      renderedLeafId:renderedLeaf(fetched.nodes, pre.branches)
+    };
+    const {tree, files, ctx}=buildChatBranchFiles(fetched, ctxBase);
+    const manifest=buildBranchManifest(ctx, files);
+    return {ok:true, ctx, tree, fetched, files, manifest, base:safeFilePart(ctx.aiName,'character')};
+  }
+
+  async function exportAllBranches(mode){
+    closeMenus();
+    showPrompt('Reading the full conversation tree…', {ok:false, cancel:false});
+    setStatus('reading conversation tree…','muted');
+    let result;
+    try{
+      result=await buildBranchExport(s=>{ updatePrompt(s,{ok:false,cancel:false}); setStatus(s,'muted'); });
+    }catch(e){
+      result={ok:false, error:String(e?.message||e)};
+    }
+    if(!result.ok){
+      setStatus('branch export unavailable','warn');
+      updatePrompt('Export all branches is unavailable:\n'+result.error+'\n\nNothing was downloaded. The regular ↓ export still works.',
+        {okText:'ok', cancel:false, onOK:hidePrompt});
+      return false;
+    }
+
+    const {files, manifest, base, tree, ctx}=result;
+    const stamp=ts();
+    const manifestText=JSON.stringify(manifest, null, 2);
+    const wasMulti=MULTI_DOWNLOAD;
+    try{
+      if(mode==='separate'){
+        MULTI_DOWNLOAD=true;
+        download(`${base} - ${safeFilePart(ctx.route.conversationId,'chat')} - manifest.json`, manifestText, 'application/json;charset=utf-8');
+        for(const f of files){
+          await sleep(350); // browsers throttle bursts of downloads
+          download(f.name, f.data, 'application/x-ndjson;charset=utf-8');
+        }
+      }else{
+        const folder=`${base} - ${safeFilePart(ctx.route.conversationId,'chat')}/`;
+        const zip=makeZip([{name:folder+'manifest.json', data:manifestText}]
+          .concat(files.map(f=>({name:folder+f.name, data:f.data}))));
+        download(`${base} - ${safeFilePart(ctx.route.conversationId,'chat')} - branches - ${stamp}.zip`, zip, 'application/zip');
+      }
+    }finally{
+      setTimeout(()=>{ MULTI_DOWNLOAD=wasMulti; }, 0);
+    }
+
+    const lines=[
+      `Exported ${tree.branches.length} branch${tree.branches.length===1?'':'es'} (${manifest.counts.nodes} messages in the tree, ${tree.forks.length} fork point${tree.forks.length===1?'':'s'}).`,
+      mode==='separate' ? `Saved ${files.length} .jsonl files + a manifest.` : 'Saved one .zip with a .jsonl per branch + manifest.json.',
+      manifest.capture.complete ? 'Coverage: CrushOn returned the complete tree.' : 'Coverage: INCOMPLETE. See the warnings below.',
+      manifest.rendered_branch ? `The branch shown on this page is ${manifest.rendered_branch}.` : 'Could not tell which branch this page is showing.',
+      ''
+    ];
+    tree.branches.forEach((b,i)=>{
+      const sp=b.sharedPrefix ? `, splits from ${b.sharedPrefix.branch_id} at message ${b.sharedPrefix.jsonl_messages+1} (${b.forkKind})` : '';
+      lines.push(`• ${b.id}: ${files[i].messages} msgs${sp}${tree.newestLeaf===b.leaf?' (newest)':''}`);
+    });
+    if(manifest.warnings.length){
+      lines.push('', 'Warnings:');
+      manifest.warnings.slice(0,6).forEach(w=>lines.push('– '+w));
+      if(manifest.warnings.length>6) lines.push(`– …and ${manifest.warnings.length-6} more in manifest.json`);
+    }
+    updatePrompt(lines.join('\n'), {okText:'ok', cancel:false, onOK:hidePrompt});
+    setStatus(`exported ${tree.branches.length} branches`,'ok');
+    return true;
+  }
+
+  // ---------- Dump history response (diagnostics) ----------
+  async function dumpHistoryResponse(){
+    closeMenus();
+    const route=chatRouteIds();
+    if(!route){
+      showPrompt('Open a specific conversation first.', {okText:'ok', cancel:false, onOK:hidePrompt});
+      return;
+    }
+    showPrompt('Reading raw history response…', {ok:false, cancel:false});
+    setPace(400, 200);
+    PACE.cancelled=false;
+    const fetched=await fetchConversationTree(route.conversationId, s=>updatePrompt(s,{ok:false,cancel:false}), true);
+    const out={
+      tool:'CrushOn Exporter PLUS: history dump',
+      exporter_version:SCRIPT_VERSION,
+      exported_at:new Date().toISOString(),
+      source_url:location.href,
+      procedure:TREE_PROC,
+      ok:fetched.ok,
+      error:fetched.error ?? null,
+      complete:fetched.complete ?? false,
+      notes:fetched.notes ?? [],
+      pages:fetched.raw
+    };
+    download(`crushon-history-dump - ${safeFilePart(route.conversationId,'chat')} - ${ts()}.json`, JSON.stringify(out,null,2), 'application/json;charset=utf-8');
+    updatePrompt(
+      (fetched.ok ? `Saved the raw response (${fetched.pages} page${fetched.pages===1?'':'s'}, ${fetched.nodes.size} messages).` : 'The history request failed; the dump records the error.') +
+      '\nIt contains your full message text. Handle it like the chat itself.',
+      {okText:'ok', cancel:false, onOK:hidePrompt});
+  }
+
+  // ---------- Export ALL chats (every character, every chat, every branch) ----------
+  async function listAllChats(onStep){
+    const rc=await trpcCall('character.queryRecentCharacters', {nsfw:true, locale:(document.documentElement.lang||'en').slice(0,2)||'en'}, 'GET');
+    if(!rc.ok) return {ok:false, error:`character.queryRecentCharacters unavailable (${rc.error})`};
+    const chars=Array.isArray(rc.data?.characters) ? rc.data.characters : null;
+    if(!chars) return {ok:false, error:'character.queryRecentCharacters returned no character list.'};
+    const chats=[], problems=[];
+    for(let i=0;i<chars.length;i++){
+      if(PACE.cancelled) return {ok:false, error:'cancelled', cancelled:true};
+      const c=chars[i];
+      const cid=String(c?.id||'');
+      if(!cid) continue;
+      onStep && onStep(`listing chats: character ${i+1} of ${chars.length}…`);
+      const lc=await trpcCall('chat.listConversations', {characterId:cid}, 'GET');
+      if(!lc.ok){ problems.push({character_id:cid, character_name:c.name||'', error:lc.error}); if(lc.cancelled) break; continue; }
+      const infos=Array.isArray(lc.data?.conversationInfos) ? lc.data.conversationInfos : [];
+      for(const info of infos){
+        const conv=info?.conversation;
+        if(conv?.id) chats.push({characterId:cid, characterName:cleanAiNameExact(c.name||'') , conversationId:String(conv.id), chatName:conv.name||''});
+      }
+      if(typeof c.conversationCount==='number' && c.conversationCount!==infos.length){
+        problems.push({character_id:cid, character_name:c.name||'', note:`character says ${c.conversationCount} chats; list returned ${infos.length}`});
+      }
+    }
+    return {ok:true, characters:chars.length, chats, problems};
+  }
+
+  async function exportAllChats(){
+    closeMenus();
+    PACE.cancelled=false;
+    setPace(1500, 1000); // ≈1.5–2.5 s between requests, one at a time
+    const cancelBtn={cancel:true, cancelText:'Stop', ok:false, onCancel:()=>{ PACE.cancelled=true; updatePrompt('Stopping after the current request…',{ok:false,cancel:false}); }};
+    showPrompt('Listing your chats…', cancelBtn);
+    setStatus('bulk: listing chats…','muted');
+
+    const list=await listAllChats(s=>{ updatePrompt(s, cancelBtn); setStatus('bulk: '+s,'muted'); });
+    if(!list.ok){
+      setStatus('bulk export stopped','warn');
+      updatePrompt(list.cancelled ? 'Stopped. Nothing was downloaded.' : 'Could not list your chats:\n'+list.error+'\n\nNothing was downloaded.', {okText:'ok', cancel:false, onOK:hidePrompt});
+      return false;
+    }
+    const mins=Math.max(1, Math.round(list.chats.length*2.2/60));
+    const go=await new Promise(resolve=>showPrompt(
+      `Found ${list.chats.length} chats across ${list.characters} characters.\n\n`+
+      `Downloading every branch of every chat takes about ${mins} minute${mins===1?'':'s'} (one request every ~2 s, so CrushOn isn't flooded). `+
+      'Keep this tab open. You can stop at any time and keep what has been collected.\n\nStart?',
+      {okText:'Start', cancelText:'Cancel', onOK:()=>resolve(true), onCancel:()=>resolve(false)}));
+    if(!go){ hidePrompt(); setStatus('bulk export cancelled','warn'); return false; }
+
+    const exportedAt=new Date().toISOString();
+    const root=`crushon-all-chats - ${ts()}/`;
+    const entries=[], manifestFiles=[], chatResults=[];
+    const charFolder=new Map();
+    let done=0;
+    for(const chat of list.chats){
+      if(PACE.cancelled) break;
+      done++;
+      const label=`chat ${done} of ${list.chats.length} (${chat.characterName})`;
+      updatePrompt(`Exporting ${label}…\n${manifestFiles.length} branch files so far.`, cancelBtn);
+      setStatus('bulk: '+label,'muted');
+      const fetched=await fetchConversationTree(chat.conversationId);
+      if(!fetched.ok){
+        chatResults.push({character_id:chat.characterId, character_name:chat.characterName, chat_id:chat.conversationId, ok:false, error:fetched.error});
+        if(fetched.cancelled) break;
+        continue;
+      }
+      if(!fetched.nodes.size){
+        chatResults.push({character_id:chat.characterId, character_name:chat.characterName, chat_id:chat.conversationId, ok:true, branches:0, note:'empty conversation'});
+        continue;
+      }
+      if(!charFolder.has(chat.characterId)){
+        charFolder.set(chat.characterId, `${safeFilePart(chat.characterName,'character')} (${safeFilePart(chat.characterId.slice(0,8),'id')})/`);
+      }
+      const folder=root+charFolder.get(chat.characterId);
+      const route={characterId:chat.characterId, conversationId:chat.conversationId};
+      const {tree, files, ctx}=buildChatBranchFiles(fetched, {
+        route, aiName:chat.characterName || 'AI', chatName:chat.chatName, exportedAt,
+        sourceUrl:`${location.origin}/character/${encodeURIComponent(chat.characterId)}/chat/${encodeURIComponent(chat.conversationId)}`,
+        renderedLeafId:null
+      });
+      for(const f of files) entries.push({name:folder+f.name, data:f.data});
+      manifestFiles.push(...chatManifestEntries(files, ctx, charFolder.get(chat.characterId)));
+      chatResults.push({
+        character_id:chat.characterId, character_name:chat.characterName, chat_id:chat.conversationId,
+        ...(chat.chatName ? {chat_name:chat.chatName} : {}),
+        ok:true, messages:fetched.nodes.size, memory_messages:fetched.memory.length, branches:tree.branches.length, fork_points:tree.forks.length,
+        pages_fetched:fetched.pages, stopped_early:!!fetched.stoppedEarly,
+        complete:fetched.complete && !tree.detached.length && !tree.missingChildren.size,
+        warnings:tree.warnings.concat(fetched.notes)
+      });
+      fetched.nodes.clear(); // free memory as we go
+    }
+
+    const stopped=PACE.cancelled;
+    PACE.cancelled=false;
+    const failed=chatResults.filter(r=>!r.ok);
+    const incomplete=chatResults.filter(r=>r.ok && r.complete===false);
+    const manifest={
+      format:'crushon-exporter-plus/bulk-export',
+      format_version:1,
+      exporter_version:SCRIPT_VERSION,
+      exported_at:exportedAt,
+      finished:!stopped,
+      note:stopped ? 'Stopped by the user before every chat was exported; chats not listed under "chats" were not attempted.' : 'Every listed chat was attempted.',
+      listing:{source:'character.queryRecentCharacters + chat.listConversations', characters:list.characters, chats_listed:list.chats.length, problems:list.problems},
+      totals:{chats_attempted:chatResults.length, chats_failed:failed.length, chats_incomplete:incomplete.length, files:manifestFiles.length},
+      files:manifestFiles,
+      chats:chatResults
+    };
+    if(!manifestFiles.length){
+      setStatus('bulk export: nothing collected','warn');
+      updatePrompt('Nothing was collected, so nothing was downloaded.'+(failed.length?`\n${failed.length} chat(s) failed, first error: ${failed[0].error}`:''), {okText:'ok', cancel:false, onOK:hidePrompt});
+      return false;
+    }
+    updatePrompt('Packing the .zip…', {ok:false, cancel:false});
+    await sleep(50);
+    let zip;
+    try{
+      zip=makeZip([{name:root+'manifest.json', data:JSON.stringify(manifest,null,2)}].concat(entries));
+    }catch(e){
+      updatePrompt('Could not build the .zip: '+(e?.message||e), {okText:'ok', cancel:false, onOK:hidePrompt});
+      return false;
+    }
+    download(root.slice(0,-1)+'.zip', zip, 'application/zip');
+    const lines=[
+      stopped ? `Stopped early. Saved what was collected (${chatResults.length} of ${list.chats.length} chats attempted).` : `Attempted all ${list.chats.length} chats.`,
+      `${manifestFiles.length} branch files across ${charFolder.size} characters, ${zip.size>=1048576 ? (Math.round(zip.size/1048576*10)/10)+' MB' : Math.max(1,Math.round(zip.size/1024))+' KB'}.`,
+      incomplete.length ? `${incomplete.length} chat(s) came back incomplete; see manifest.json → chats.` : 'Every exported chat came back complete.',
+      failed.length ? `${failed.length} chat(s) failed; see manifest.json → chats.` : '',
+      list.problems.length ? `${list.problems.length} listing note(s) in manifest.json → listing.problems.` : ''
+    ].filter(Boolean);
+    updatePrompt(lines.join('\n'), {okText:'ok', cancel:false, onOK:hidePrompt});
+    setStatus(`bulk export: ${manifestFiles.length} files`,'ok');
+    return true;
+  }
+
+  // ---------- regular ↓ export: the rendered branch from the tree ----------
+  // Returns {rows, note, meta} or {rows:null, note}. Used only when the visible
+  // branch can be identified with confidence.
+  async function captureRenderedBranchFromTree(){
+    const route=chatRouteIds();
+    if(!route) return {rows:null, note:''};
+    setPace(400, 200);
+    PACE.cancelled=false;
+    const fetched=await fetchConversationTree(route.conversationId);
+    if(!fetched.ok || !fetched.nodes.size) return {rows:null, note:''};
+    const tree=analyzeTree(fetched.nodes);
+    let leaf=null, why='';
+    if(tree.branches.length===1){ leaf=tree.branches[0].leaf; why='single-branch conversation'; }
+    else{
+      leaf=renderedLeaf(fetched.nodes, tree.branches);
+      why='branch matched to the messages rendered in the page';
+    }
+    if(!leaf){
+      return {rows:null, note:`This conversation has ${tree.branches.length} branches and the visible one could not be identified; use ⚙ → This chat: all branches for the full tree.`};
+    }
+    const b=tree.branches.find(x=>x.leaf===leaf);
+    const rows=[];
+    for(const {id, m} of memoryRows(fetched)){
+      const who=treeRole(m);
+      if(who!=='USER' && who!=='AI') continue;
+      const text=String(nodeText(m)||'');
+      const t=nodeTime(m);
+      rows.push({id, seq:rows.length, who, raw:text, html:escapeHtml(text).replace(/\r?\n/g,'<br>'), t,
+        crushon:{message_id:id||null, parent_message_id:null, created_at:isoOrBlank(t), time_source:t!==null?'server':'none', edited:m.isEdited===true, memory:true}});
+    }
+    for(const id of b.path){
+      const m=fetched.nodes.get(id);
+      const who=treeRole(m);
+      if(who!=='USER' && who!=='AI') continue;
+      const text=String(nodeText(m)||'');
+      rows.push({
+        id, seq:rows.length, who, raw:text,
+        html:escapeHtml(text).replace(/\r?\n/g,'<br>'),
+        t:nodeTime(m),
+        crushon:crushonMessageExtra(m, id, tree)
+      });
+    }
+    const complete=fetched.complete && !b.detachedRoot && !b.truncatedTail && !tree.missingChildren.size;
+    const branchNote=tree.branches.length>1
+      ? ` This is ${b.id} of ${tree.branches.length} (${why}); ⚙ → This chat: all branches saves the others.`
+      : '';
+    return {
+      rows,
+      meta:{
+        capture:'message_tree', complete, pages_fetched:fetched.pages, stopped_early:!!fetched.stoppedEarly,
+        branch_id:b.id, branch_count:tree.branches.length,
+        parent_branch_id:b.sharedPrefix?.branch_id ?? null,
+        fork_index:forkIndexOf(b, fetched),
+        fork_kind:b.forkKind, leaf_message_id:b.leaf, memory_messages:memoryRows(fetched).length
+      },
+      note:(complete ? 'Complete history for this branch from CrushOn\'s message tree.' : 'CrushOn\'s message tree was incomplete; older messages may be missing.')+branchNote
+    };
   }
 
   // ---------- capture ----------
@@ -1151,12 +2102,36 @@
     // Replays only an existing, same-conversation authenticated history
     // request seen in this tab. Never fabricate an API endpoint or ID.
     setStatus('checking accessible conversation history…','muted');
+    // 1) CrushOn's own message tree (chat.getMessageHistory), when the visible
+    //    branch can be identified with confidence.
+    let treeNote='';
+    LAST_TREE_NOTE='';
+    CAPTURE_META={capture:'none', complete:false, pages_fetched:0, stopped_early:false};
+    try{
+      const fromTree=await captureRenderedBranchFromTree();
+      treeNote=fromTree.note||'';
+      LAST_TREE_NOTE=treeNote;
+      if(fromTree.rows?.length){
+        for(const it of fromTree.rows) records.push(it);
+        CAPTURE_SOURCE='CrushOn history API (message tree)';
+        CAPTURE_NOTE=treeNote;
+        CAPTURE_META=fromTree.meta;
+        const u=fromTree.rows.filter(x=>x.who==='USER').length;
+        setCounts(`${u}U/${fromTree.rows.length-u}A`);
+        await finishCapture(afterCapture, opts);
+        return true;
+      }
+    }catch(e){ console.warn('[CrushOn Exporter] message tree unavailable:',e); }
+
+    // 2) A matching history request already observed in this tab.
     try{
       const history=await captureHistoryFromObservedRequest();
       if(history?.length){
         for(const it of history) records.push(it);
         CAPTURE_SOURCE='CrushOn history API';
         CAPTURE_NOTE='History API response captured. Older pages are included only when the observed endpoint exposes supported pagination; full-history coverage cannot otherwise be guaranteed.';
+        CAPTURE_META=history.meta || {capture:'observed_request', complete:false, pages_fetched:0, stopped_early:false};
+        if(treeNote) CAPTURE_NOTE+=' '+treeNote;
         const u=history.filter(x=>x.who==='USER').length;
         setCounts(`${u}U/${history.length-u}A`);
         await finishCapture(afterCapture, opts);
@@ -1284,7 +2259,8 @@
   async function doCaptureAfterCalibrated(){
     const items=collectFromDOM();
     CAPTURE_SOURCE='visible DOM';
-    CAPTURE_NOTE='Only currently rendered messages are available; older messages may be missing.';
+    CAPTURE_META={capture:'visible_dom', complete:false, pages_fetched:0, stopped_early:false};
+    CAPTURE_NOTE='Only currently rendered messages are available; older messages may be missing.'+(LAST_TREE_NOTE?' '+LAST_TREE_NOTE:'');
     fixSkew(items);
 
     let u=0,a=0;
@@ -1339,6 +2315,8 @@
 
   function orderedRecords(){
     const items=records.slice();
+    // Message-tree captures are already in parent→child order; keep it.
+    if(CAPTURE_META.capture==='message_tree') return items;
     // Only timestamp-sort when *all* entries have authentic timestamps.
     // Otherwise preserve server order / message order in the DOM.
     if(items.length && items.every(it=>it.t!==null && Number.isFinite(it.t))){
@@ -1347,13 +2325,51 @@
     return items;
   }
 
+  // CrushOn renders an "(edited)" tag inside the message block. It is UI, not
+  // message text: remove it and report edited:true instead.
+  const EDITED_LABEL_RE=/^\s*\(?\s*edited\s*\)?\s*$/i;
+  function stripEditedLabel(root){
+    let edited=false;
+    for(const n of [...root.querySelectorAll('span,small,div,i,em')]){
+      if(n.children.length===0 && EDITED_LABEL_RE.test(n.textContent||'')){ n.remove(); edited=true; }
+    }
+    return edited;
+  }
+
+  // Flatten rendered markdown back to text, restoring *em* / **strong** so a
+  // DOM capture reads like CrushOn's raw text instead of losing asterisks.
+  function domToText(root){
+    const BLOCK=/^(p|div|li|blockquote|pre|h[1-6]|tr|ul|ol|table|section|article)$/;
+    let out='';
+    const walk=n=>{
+      if(n.nodeType===3){ out+=n.nodeValue; return; }
+      if(n.nodeType!==1) return;
+      const tag=n.localName;
+      if(tag==='script' || tag==='style' || tag==='button' || tag==='svg') return;
+      if(tag==='br'){ out+='\n'; return; }
+      const block=BLOCK.test(tag);
+      if(block && out && !out.endsWith('\n')) out+='\n';
+      const mark=(tag==='strong'||tag==='b') ? '**' : (tag==='em'||tag==='i') ? '*' : (tag==='del'||tag==='s') ? '~~' : '';
+      if(tag==='li') out+='- ';
+      if(mark) out+=mark;
+      n.childNodes.forEach(walk);
+      if(mark) out+=mark;
+      if(block && !out.endsWith('\n')) out+='\n';
+    };
+    walk(root);
+    // Paragraphs in CrushOn are separated by a blank line in the raw text.
+    return out.replace(/\r/g,'').replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
+  }
+
   function collectFromDOM(){
     const groups=getGroups();
     const out=[];
 
     for(const g of groups){
       const body=getBlock(g);
-      const html=(body.innerHTML||'').trim();
+      const clone=body.cloneNode(true);
+      const edited=stripEditedLabel(clone);
+      const html=(clone.innerHTML||'').trim();
       if(!html) continue;
       const f=featureFromRow(g);
       out.push({
@@ -1361,6 +2377,8 @@
         seq:out.length,
         who:decideWho(g),
         html,
+        text:domToText(clone),
+        crushon:{edited},
         right:f.right,
         charLink:f.charLink,
         nameChip:f.nameChip
@@ -1656,6 +2674,14 @@
     }
   }
 
+  // API captures keep the server's text verbatim; DOM captures use the
+  // markdown-preserving flattening; older records fall back to stripHTML.
+  function messageText(it){
+    if(typeof it.raw==='string') return it.raw;
+    if(typeof it.text==='string') return it.text;
+    return stripHTML(it.html);
+  }
+
   function exportTxt(){
     if(!records.length){
       showPrompt(
@@ -1670,7 +2696,7 @@
     const lines=[
       '# '+(document.title||'CrushOn Chat'),
       'URL: '+location.href,
-      'AI: '+currentAIName(),
+      'AI: '+exportAIName(),
       'Exported: '+new Date().toISOString(),
       'Source: '+CAPTURE_SOURCE,
       'Coverage: '+CAPTURE_NOTE,
@@ -1678,7 +2704,7 @@
     ];
 
     for(const it of items){
-      lines.push(`[${labelFor(it.who)}] `+stripHTML(it.html));
+      lines.push(`[${labelFor(it.who)}] `+messageText(it));
       lines.push('');
     }
 
@@ -1702,7 +2728,7 @@
     closeMenus();
 
     const items=orderedRecords();
-    const aiName=currentAIName() || 'AI';
+    const aiName=exportAIName() || 'AI';
     const userName='User';
     const exportedAt=new Date().toISOString();
 
@@ -1715,7 +2741,16 @@
         capture_note:CAPTURE_NOTE,
         source_url:location.href,
         imported_from:'crushon.ai',
-        exported_at:exportedAt
+        exported_at:exportedAt,
+        crushon:(()=>{
+          const r=chatRouteIds();
+          return {
+            exporter_version:SCRIPT_VERSION,
+            character_id:r?.characterId ?? null,
+            chat_id:r?.conversationId ?? null,
+            ...CAPTURE_META
+          };
+        })()
       },
       user_name:'unused',
       character_name:'unused'
@@ -1723,16 +2758,26 @@
 
     for(const it of items){
       const isUser=it.who==='USER';
-      const text=stripHTML(it.html);
+      const text=messageText(it);
+      const hasTime=it.t!==null && it.t!==undefined && Number.isFinite(it.t);
+      const fromServer=CAPTURE_META.capture==='message_tree' || CAPTURE_META.capture==='observed_request';
 
       rows.push({
         name:isUser ? userName : aiName,
         is_user:isUser,
         is_system:false,
         // Empty rather than inventing a timestamp at export time.
-        send_date:it.t!==null ? new Date(it.t).toISOString() : '',
+        send_date:hasTime ? new Date(it.t).toISOString() : '',
         mes:text,
-        extra:{}
+        extra:{
+          crushon:{
+            created_at:hasTime ? new Date(it.t).toISOString() : '',
+            time_source:hasTime ? (fromServer ? 'server' : 'page') : 'none',
+            edited:false,
+            ...(it.id ? {message_id:it.id} : {}),
+            ...(it.crushon||{})
+          }
+        }
       });
     }
 
@@ -1849,7 +2894,7 @@ article.msg{position:relative;background:#121212;border:1px solid #333;border-ra
 article.msg .cap{position:absolute;top:-10px;left:12px;font:11px/1 monospace;letter-spacing:.3px;background:#1c1c1c;border:1px solid #3a3a3a;border-radius:8px;padding:3px 6px}
 article.msg .cap.user{background:#291a2d;border-color:#5a3a66}article.msg .cap.ai{background:#182028;border-color:#334655}
 article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;border:1px solid #2a2a2a;border-radius:6px;padding:2px 4px}
-</style></head><body><div class="chat"><div class="title"># ${escapeHtml(document.title||'CrushOn Chat')}</div><div class="meta">URL: ${escapeHtml(location.href)}<br>AI: ${escapeHtml(currentAIName())}<br>Exported: ${new Date().toISOString()}<br>Source: ${escapeHtml(CAPTURE_SOURCE)}<br>Coverage: ${escapeHtml(CAPTURE_NOTE)}</div>`;
+</style></head><body><div class="chat"><div class="title"># ${escapeHtml(document.title||'CrushOn Chat')}</div><div class="meta">URL: ${escapeHtml(location.href)}<br>AI: ${escapeHtml(exportAIName())}<br>Exported: ${new Date().toISOString()}<br>Source: ${escapeHtml(CAPTURE_SOURCE)}<br>Coverage: ${escapeHtml(CAPTURE_NOTE)}</div>`;
 
     const body=items.map(it=>{
       const capCls=(it.who==='USER')?'user':'ai';
