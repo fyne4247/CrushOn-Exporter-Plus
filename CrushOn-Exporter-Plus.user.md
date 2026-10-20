@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CrushOn Exporter v2
 // @namespace    co-export-plus
-// @version      2.5.2
+// @version      2.5.3
 // @description  Export chats and SillyTavern cards, restore avatars, calibrate speakers, and safely export HTML.
 // @match        https://crushon.ai/*
 // @match        https://www.crushon.ai/*
@@ -267,10 +267,14 @@
     el.style.top  = top  + window.scrollY + 'px';
     el.style.right='auto'; el.style.bottom='auto';
   }
-  function savePos(key, el){ try{ const r = el.getBoundingClientRect(); coSetValue(key, {left: r.left + window.scrollX, top: r.top + window.scrollY}); }catch{} }
+  // A hidden element measures 0×0 at (0,0); saving that would park the window
+  // in the top-left corner next time (e.g. a silent capture closing a prompt
+  // that was never shown).
+  function savePos(key, el){ try{ const r = el.getBoundingClientRect(); if(!r.width && !r.height) return; coSetValue(key, {left: r.left + window.scrollX, top: r.top + window.scrollY}); }catch{} }
   function restorePos(key, el){
     try{ const v = coGetValue(key, null);
-      if(v && typeof v.left==='number' && typeof v.top==='number'){
+      // (0,0) is what a hidden window used to save; treat it as no position.
+      if(v && typeof v.left==='number' && typeof v.top==='number' && (v.left || v.top)){
         el.style.left = v.left + 'px'; el.style.top  = v.top  + 'px'; el.style.right='auto'; el.style.bottom='auto'; return true;
       }
     }catch{}
@@ -1243,7 +1247,7 @@
   // This section reads only. It never sends, edits, deletes or switches anything.
   const TREE_PROC = 'chat.getMessageHistory';
   const TREE_MAX_PAGES = 25;
-  const SCRIPT_VERSION = (()=>{ try{ return GM_info.script.version; }catch(_){ return '2.5.2'; } })();
+  const SCRIPT_VERSION = (()=>{ try{ return GM_info.script.version; }catch(_){ return '2.5.3'; } })();
 
   // ---- request pacing ----
   const PACE = { last:0, minGap:400, jitter:0, cancelled:false };

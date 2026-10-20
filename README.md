@@ -2,7 +2,7 @@
 
 A userscript for exporting [CrushOn.AI](https://crushon.ai/) conversations and characters, with SillyTavern-compatible output, better chat capture, and a workaround for broken character images.
 
-**Current version:** 2.5.2  
+**Current version:** 2.5.3  
 **Based on:** [CookieLoverAnon's CrushOnAI Chat Exporter](https://github.com/CookieLoverAnon/CrushOnAI-Chat-Exporter)
 
 > **Note:** This is an independently modified fork, not an official CrushOn.AI tool. CrushOn's site and APIs can change without notice. Some functions are best-effort and may require further updates.
