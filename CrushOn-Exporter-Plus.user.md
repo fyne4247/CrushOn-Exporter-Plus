@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CrushOn Exporter v2
 // @namespace    co-export-plus
-// @version      2.5.3
+// @version      2.6.0
 // @description  Export chats and SillyTavern cards, restore avatars, calibrate speakers, and safely export HTML.
 // @match        https://crushon.ai/*
 // @match        https://www.crushon.ai/*
@@ -61,18 +61,20 @@
   #coBox button.coScope.all{border-color:#f55;background:rgba(160,30,30,.65);color:#ffdede}
   #coBox button.coScope.all:hover{background:rgba(190,40,40,.8)}
   #coBox button#coCfg{font:22px/1 system-ui,-apple-system,"Segoe UI Symbol",sans-serif;color:#ddd}
+  #coBox button#coMin{font:18px/1 system-ui,-apple-system,sans-serif;color:#ccc}
+  #coBox[data-collapsed="1"] button:not(#coMin){display:none}
 
-  #coHUD{position:fixed;left:12px;bottom:12px;z-index:2147483647;background:#0f0f10;color:#e6e6e6;border:1px solid #333;border-radius:10px;padding:10px 12px;font:12px/1.4 monospace;min-width:320px;transform-origin:bottom left}
-  #coHUD .ok{color:#7bff7b} #coHUD .warn{color:#ffd479} #coHUD .muted{opacity:.8}
-  #coTab{position:fixed;right:12px;bottom:12px;width:28px;height:28px;border-radius:8px;background:#111;border:1px solid #333;color:#fff;z-index:2147483647;display:none;align-items:center;justify-content:center;font:14px monospace}
 
   .coMenu{position:fixed;background:#151515;color:#fff;border:1px solid #3a3a3a;border-radius:10px;box-shadow:0 10px 32px #000b;display:none;min-width:240px;padding:6px;z-index:2147483647}
   .coMenu button{display:block;width:100%;text-align:left;margin:2px 0;padding:8px 10px;background:#1b1b1c;color:#fff;border:1px solid #333;border-radius:8px;cursor:pointer}
+  .coMenu .coHead{padding:8px 10px 3px;font:600 10px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.8px;color:#888}
+  .coMenu .coSub{display:none;margin-left:12px}
+  .coMenu .coSub.open{display:block}
 
   .coFloating{position:fixed;z-index:2147483647;background:#0f0f10;color:#e6e6e6;border:1px solid #333;border-radius:10px;transform-origin:top left}
 
   #coPrompt.coFloating{display:none;max-width:460px;width:min(92vw,460px);border-radius:12px;padding:12px 14px;font:13px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Arial;box-shadow:0 18px 48px #000a}
-  #coPrompt .title{font-weight:700;margin:0 0 6px 0}
+  #coPrompt .title{font-weight:700;margin:-12px -14px 6px;padding:12px 14px 4px;user-select:none;-webkit-user-select:none}
   #coPrompt .msg{white-space:pre-wrap;word-break:break-word}
   #coPrompt .row{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
   #coPrompt button{padding:10px 12px;border-radius:8px;border:1px solid #3a3a3a;background:#1b1b1c;color:#fff;cursor:pointer}
@@ -82,12 +84,12 @@
   input#coScaleSlider{width:100%}
 
   #coHelp.coFloating{display:none;min-width:300px;max-width:min(92vw,680px)}
-  #coHelp header{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid #333;background:#111;border-radius:10px 10px 0 0}
+  #coHelp header{user-select:none;-webkit-user-select:none;display:flex;gap:8px;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid #333;background:#111;border-radius:10px 10px 0 0}
   #coHelpClose{padding:6px 8px;font-size:12px;border:1px solid #333;color:#fff;background:#222;cursor:pointer}
+  #coHelp .coHelpBody{padding:4px 16px 14px;font:13px/1.55 system-ui,-apple-system,Segoe UI,Roboto,Arial;max-height:min(70vh,640px);overflow:auto}
+  #coHelp h3{margin:16px 0 6px;padding-bottom:4px;border-bottom:1px solid #2c2c2c;font-size:12px;letter-spacing:.8px;text-transform:uppercase;color:#9a9a9a}
+  #coHelp p{margin:0 0 9px}
 
-  .coIcon{position:absolute;top:6px;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:14px;border:1px solid #3a3a3a;border-radius:50%;background:#1b1b1c;color:#bbb;cursor:pointer;transition:opacity .15s ease,color .15s ease,background .15s ease,border-color .15s ease}
-  .coHandle{left:6px;opacity:.35;touch-action:none}
-  .coIcon:hover{opacity:.7}
   `;
   (typeof GM_addStyle === 'function'
     ? GM_addStyle
@@ -187,32 +189,31 @@
   let UI_SCALE = (function(){ try{ const v=coGetValue('co_ui_scale', 1); return (typeof v==='number' && v>0)? v : 1; }catch(_){ return 1; } })();
   function applyScale(k){
     UI_SCALE = k;
-    ['#coBox','#coHUD','#coTab','#coPrompt','#coHelp','#coMenuExport','#coMenuTools'].forEach(sel=>{
+    ['#coBox','#coPrompt','#coHelp','#coMenuExport','#coMenuTools'].forEach(sel=>{
       const n=$(sel); if(n) n.style.transform=`scale(${k})`;
     });
   }
 
-  // ---------- status bar toggle ----------
-  let HUD_ENABLED = (function(){ try{ return !!coGetValue('co_hud_enabled', false); }catch(_){ return false; } })();
+  // ---------- settings menu labels ----------
   function updateToolsMenuLabels(){
-    const btn=$('#coToggleHUD'); if(btn) btn.textContent = HUD_ENABLED ? 'Hide status bar' : 'Show status bar';
     const imgBtn=$('#coToggleImages');
     if(imgBtn) imgBtn.textContent = 'Restore missing pictures: ' + (IMAGE_FIX_ENABLED ? 'ON' : 'OFF');
     const regBtn=$('#coToggleRegens');
-    if(regBtn) regBtn.textContent = 'Regenerations as branches: ' + (INCLUDE_REGENS ? 'ON' : 'OFF');
+    if(regBtn) regBtn.textContent = 'Keep regenerations: ' + (KEEP_REGENS ? 'ON' : 'OFF');
     const contBtn=$('#coToggleContinue');
     if(contBtn) contBtn.textContent = 'Skip "continue" messages: ' + (SKIP_CONTINUE ? 'ON' : 'OFF');
   }
 
   // ---------- export options ----------
-  // Off: a regenerated reply that nothing continues from is kept only as a
-  // SillyTavern swipe, not as its own branch file.
-  let INCLUDE_REGENS = (function(){ try{ return coGetValue('co_include_regens', false) === true; }catch(_){ return false; } })();
+  // CrushOn only ever shows the newest version of a reply. Off: exports keep
+  // just the reply the chat continued from (the newest, at a dead end). On:
+  // the other versions are kept as SillyTavern swipes in the .jsonl.
+  let KEEP_REGENS = (function(){ try{ return coGetValue('co_keep_regens', false) === true; }catch(_){ return false; } })();
   // On: user messages that only say "continue" are left out of every export.
   let SKIP_CONTINUE = (function(){ try{ return coGetValue('co_skip_continue', true) !== false; }catch(_){ return true; } })();
-  function setIncludeRegens(on){
-    INCLUDE_REGENS=!!on;
-    try{ coSetValue('co_include_regens', INCLUDE_REGENS); }catch(_){}
+  function setKeepRegens(on){
+    KEEP_REGENS=!!on;
+    try{ coSetValue('co_keep_regens', KEEP_REGENS); }catch(_){}
     updateToolsMenuLabels();
   }
   function setSkipContinue(on){
@@ -226,18 +227,6 @@
     const t=String(s||'').replace(/[*_~`"'“”‘’()[\]]/g,'').replace(/[\s.!?…]+$/,'').trim().toLowerCase();
     return t==='continue';
   }
-  function updateHUDVisibility(){
-    const hud=$('#coHUD'); const box=$('#coBox');
-    if(!hud) return;
-    if(box?.dataset.minimized==='1'){ hud.style.display='none'; return; }
-    hud.style.display = HUD_ENABLED ? '' : 'none';
-  }
-  function setHUDEnabled(on){
-    HUD_ENABLED=!!on;
-    try{ coSetValue('co_hud_enabled', HUD_ENABLED); }catch(_){}
-    updateHUDVisibility();
-    updateToolsMenuLabels();
-  }
 
   // ---------- drag + persistence ----------
   function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
@@ -247,8 +236,8 @@
     const prev = el.style.display;
     if(prev==='none') el.style.display='block';
     const r=el.getBoundingClientRect();
-    const L = window.scrollX + Math.max(8, (w - r.width)/2);
-    const T = window.scrollY + Math.max(8, (h - r.height)/2);
+    const L = Math.max(8, (w - r.width)/2);
+    const T = Math.max(8, (h - r.height)/2);
     el.style.left=L+'px'; el.style.top=T+'px'; el.style.right='auto'; el.style.bottom='auto';
     if(prev==='none') el.style.display='none';
   }
@@ -263,14 +252,14 @@
     if(isWayOffscreen(el)){ centerInViewport(el); return; }
     const left = clamp(r.left, pad, Math.max(pad, w - r.width - pad));
     const top  = clamp(r.top , pad, Math.max(pad, h - r.height - pad));
-    el.style.left = left + window.scrollX + 'px';
-    el.style.top  = top  + window.scrollY + 'px';
+    el.style.left = left + 'px';
+    el.style.top  = top  + 'px';
     el.style.right='auto'; el.style.bottom='auto';
   }
   // A hidden element measures 0×0 at (0,0); saving that would park the window
   // in the top-left corner next time (e.g. a silent capture closing a prompt
   // that was never shown).
-  function savePos(key, el){ try{ const r = el.getBoundingClientRect(); if(!r.width && !r.height) return; coSetValue(key, {left: r.left + window.scrollX, top: r.top + window.scrollY}); }catch{} }
+  function savePos(key, el){ try{ const r = el.getBoundingClientRect(); if(!r.width && !r.height) return; coSetValue(key, {left: r.left, top: r.top}); }catch{} }
   function restorePos(key, el){
     try{ const v = coGetValue(key, null);
       // (0,0) is what a hidden window used to save; treat it as no position.
@@ -280,24 +269,19 @@
     }catch{}
     return false;
   }
-  function restorePosOrCenter(key, el){ if(!restorePos(key, el)) centerInViewport(el); ensureInViewport(el); }
 
-  function unpinWindow(_keyBase, el){ if(el){ el.dataset.pinned='0'; const handle=el.querySelector('.coHandle'); if(handle) handle.style.pointerEvents='auto'; } }
-  function addOverlayControls(el, _keyBase, posKey){
-    const h=document.createElement('button');
-    h.type='button'; h.className='coIcon coHandle'; h.textContent='⠿'; h.title='Drag'; h.setAttribute('aria-label','Drag'); el.appendChild(h);
-    return {handle:h};
-  }
   function makeDraggable(el, posKey, handle){
     if(!el || !handle) return;
     let startX=0, startY=0, offX=0, offY=0, down=false;
-    const start = (cx, cy)=>{ const r=el.getBoundingClientRect(); startX=cx; startY=cy; offX=r.left+window.scrollX; offY=r.top+window.scrollY; down=true; };
+    const start = (cx, cy)=>{ const r=el.getBoundingClientRect(); startX=cx; startY=cy; offX=r.left; offY=r.top; down=true; };
     const move = (cx, cy)=>{ if(!down) return; el.style.left=(offX + (cx-startX))+'px'; el.style.top =(offY + (cy-startY))+'px'; el.style.right='auto'; el.style.bottom='auto'; };
     const end = ()=>{ if(!down) return; down=false; ensureInViewport(el); if(posKey) savePos(posKey, el); };
-    handle.addEventListener('mousedown', e=>{ e.preventDefault(); start(e.clientX, e.clientY); });
+    handle.style.cursor='move';
+    // Buttons inside the drag area (e.g. Close) still just click.
+    handle.addEventListener('mousedown', e=>{ if(e.target.closest('button')) return; e.preventDefault(); start(e.clientX, e.clientY); });
     document.addEventListener('mousemove', e=>move(e.clientX, e.clientY));
     document.addEventListener('mouseup', end);
-    handle.addEventListener('touchstart', e=>{ const t=e.touches[0]; e.preventDefault(); start(t.clientX, t.clientY); }, {passive:false});
+    handle.addEventListener('touchstart', e=>{ if(e.target.closest('button')) return; const t=e.touches[0]; e.preventDefault(); start(t.clientX, t.clientY); }, {passive:false});
     document.addEventListener('touchmove', e=>{ const t=e.touches?.[0]; if(!t) return; move(t.clientX, t.clientY); }, {passive:false});
     document.addEventListener('touchend', end);
   }
@@ -310,8 +294,8 @@
     const start = (cx,cy)=>{
       const r = el.getBoundingClientRect();
       sx=cx; sy=cy;
-      ox = r.left + window.scrollX;
-      oy = r.top  + window.scrollY;
+      ox = r.left;
+      oy = r.top;
       down = true; moved = false;
     };
     const move = (cx,cy,ev)=>{
@@ -368,11 +352,8 @@
   // ---------- robust UI boot ----------
   function ensureUI(){
     if(!$('#coBox')){ try{ buildMainUI(); }catch(e){} return; }
-    const box=$('#coBox'); const hud=$('#coHUD'); const tab=$('#coTab');
-    if(box?.dataset.minimized==='1'){ if(tab) tab.style.display='flex'; applyScale(UI_SCALE); return; }
+    const box=$('#coBox');
     if(getComputedStyle(box).display==='none') box.style.display='';
-    if(hud){ hud.style.display = HUD_ENABLED ? '' : 'none'; }
-    if(tab) tab.style.display='none';
     applyScale(UI_SCALE);
   }
   if(document.readyState==='complete' || document.readyState==='interactive') ensureUI();
@@ -422,6 +403,9 @@
     jsonl: (()=>{ try{ return coGetValue('co_fmt_jsonl', true); }catch(_){ return true; } })(),
     txt:   (()=>{ try{ return coGetValue('co_fmt_txt',   true); }catch(_){ return true; } })(),
   };
+  // Collapsed: the bar shrinks to its + button. Remembered across reloads.
+  let BAR_COLLAPSED = (()=>{ try{ return coGetValue('co_bar_collapsed', false) === true; }catch(_){ return false; } })();
+
   // ONE = ↓ exports the branch on screen; ALL = every branch of this chat.
   let EXPORT_SCOPE = (()=>{ try{ return coGetValue('co_scope', 'one')==='all' ? 'all' : 'one'; }catch(_){ return 'one'; } })();
   function setScope(scope){
@@ -457,7 +441,7 @@
   function buildMainUI(){
     if($('#coBox')) return;
 
-    // ---- the bar: 5 small squares ----
+    // ---- the bar ----
     const bar = el('div',{id:'coBox'});
     bar.setAttribute('role','toolbar');
     bar.setAttribute('aria-label','CrushOn Exporter');
@@ -483,78 +467,54 @@
     const bScope = el('button',{id:'coScope',type:'button'});
     bScope.onclick = ()=>setScope(EXPORT_SCOPE==='all' ? 'one' : 'all');
 
-    const bCfg = el('button',{id:'coCfg',type:'button',title:'More tools'});
+    const bCfg = el('button',{id:'coCfg',type:'button',title:'Settings'});
     bCfg.textContent = '⚙';
     bCfg.onclick = ()=>toggleMenu('export', bCfg);
 
-    bar.append(bPng, bJsonl, bTxt, bGo, bScope, bCfg);
+    const bMin = el('button',{id:'coMin',type:'button'});
+    bMin.onclick = ()=>setCollapsed(bar.dataset.collapsed!=='1');
+
+    bar.append(bPng, bJsonl, bTxt, bGo, bScope, bCfg, bMin);
     document.body.appendChild(bar);
     setScope(EXPORT_SCOPE);
+    setCollapsed(BAR_COLLAPSED);
 
-    // ---- HUD (unchanged, opt-in) ----
-    const hud = el('div',{id:'coHUD'});
-    hud.innerHTML = `<div><b>Status:</b> <span id=coStatus class=muted>idle</span></div>
-    <div>Captured: <span id=coMsgs>0</span> | Groups: <span id=coGroups>0</span> | Split → <span id=coSplit>0U/0A</span></div>
-    <div>Chat log: <span id=coHasLog class=muted>none</span> | Character: <span id=coHasCard class=muted>none</span></div>`;
-    document.body.appendChild(hud);
-
-    // ---- reopen tab after Hide panel ----
-    const tab = el('div',{id:'coTab', textContent:'≡'});
-    document.body.appendChild(tab);
-    tab.onclick = ()=>{
-      const b = $('#coBox'), h = $('#coHUD');
-      if(b){ b.dataset.minimized='0'; b.style.display=''; }
-      if(h){ h.dataset.minimized='0'; h.style.display = HUD_ENABLED ? '' : 'none'; }
-      tab.style.display='none';
-    };
-
-    // ---- simplified settings menu ----
+    // ---- settings menu ----
     const mExp = el('div',{id:'coMenuExport', class:'coMenu'});
+    const head = t=>{ const d=el('div',{class:'coHead'}); d.textContent=t; return d; };
+    const toggle = (id,title,fn)=>{ const b=mk('',fn); b.id=id; b.title=title; return b; };
 
-    const btnHudToggle = document.createElement('button');
-    btnHudToggle.id = 'coToggleHUD';
-    btnHudToggle.textContent = HUD_ENABLED ? 'Hide status bar' : 'Show status bar';
-    btnHudToggle.onclick = ()=>setHUDEnabled(!HUD_ENABLED);
-
-    const btnImgToggle = document.createElement('button');
-    btnImgToggle.id = 'coToggleImages';
-    btnImgToggle.textContent = 'Restore missing pictures: ' + (IMAGE_FIX_ENABLED ? 'ON' : 'OFF');
-    btnImgToggle.onclick = ()=>setImageFixEnabled(!IMAGE_FIX_ENABLED);
-
-    const btnRegenToggle = document.createElement('button');
-    btnRegenToggle.id = 'coToggleRegens';
-    btnRegenToggle.title = 'Off: regenerated replies nothing continues from stay as swipes instead of separate branch files';
-    btnRegenToggle.onclick = ()=>setIncludeRegens(!INCLUDE_REGENS);
-
-    const btnContinueToggle = document.createElement('button');
-    btnContinueToggle.id = 'coToggleContinue';
-    btnContinueToggle.title = 'On: your messages that only say "continue" are left out of exports';
-    btnContinueToggle.onclick = ()=>setSkipContinue(!SKIP_CONTINUE);
+    const debug = el('div',{class:'coSub'});
+    debug.append(
+      mk('Dump character data', probeCharacterData),
+      mk('Dump history response', dumpHistoryResponse),
+      mk('Calibrate speakers', manualCalibrate)
+    );
+    const bDebug = mk('Debug ▸', ()=>{
+      const open=debug.classList.toggle('open');
+      bDebug.textContent = open ? 'Debug ▾' : 'Debug ▸';
+      placeMenu(mExp, bCfg);
+    });
+    bDebug.title = 'Troubleshooting tools for when CrushOn changes something';
 
     mExp.append(
-      btnHudToggle,
-      btnImgToggle,
-      btnRegenToggle,
-      btnContinueToggle,
-      divider(),
-      mk('Export .html (bonus)', exportHTML),
-      mk('This chat: all branches (separate files)', ()=>exportAllBranches('separate')),
-      mk('ALL chats: every branch (.zip)', exportAllChats),
-      divider(),
-      mk('Calibrate speakers (fallback)', manualCalibrate),
-      mk('Clear captured', ()=>clearCaptured(false)),
+      mk('Master export: every chat (.zip)', exportAllChats),
+      mk('HTML export (this chat)', exportHTML),
+      divider(true),
+      head('OPTIONS'),
+      toggle('coToggleContinue', 'Leave out your messages that only say "continue"', ()=>setSkipContinue(!SKIP_CONTINUE)),
+      toggle('coToggleRegens', 'Off: only the reply the chat continued from. On: the other versions too, as SillyTavern swipes in the .jsonl', ()=>setKeepRegens(!KEEP_REGENS)),
+      toggle('coToggleImages', 'Show pictures CrushOn fails to load (display only)', ()=>setImageFixEnabled(!IMAGE_FIX_ENABLED)),
       divider(),
       mk('Resize UI…', showResizeUI),
       mk('Read me', ()=>{
         const h = $('#coHelp');
         h.style.display='block';
         closeMenus();
-        restorePosOrCenter('co_pos_help', h);
+        centerInViewport(h);
       }),
-      mk('Dump character data', probeCharacterData),
-      mk('Dump history response', dumpHistoryResponse),
-      divider(),
-      mk('Hide panel', ()=>hidePanel(true))
+      bDebug,
+      debug
     );
     document.body.appendChild(mExp);
 
@@ -570,34 +530,31 @@
       ))) closeMenus();
     }, true);
 
-    window.addEventListener('keydown', e=>{
-      if(e.altKey && String(e.key).toLowerCase()==='e'){
-        const b = $('#coBox'), h = $('#coHUD'), t = $('#coTab');
-        if(b){ b.style.display=''; b.dataset.minimized='0'; }
-        if(h){ h.style.display = HUD_ENABLED ? '' : 'none'; h.dataset.minimized='0'; }
-        if(t) t.style.display='none';
-      }
-    }, true);
-
     CHAT_CONTAINER = $(SEL_CONTAINER) || CHAT_CONTAINER;
-    setCounts('0U/0A');
-    setStatus('idle','muted');
     applyScale(UI_SCALE);
 
     makeBarDraggable(bar, 'co_pos_box');
     restorePos('co_pos_box', bar);
 
-    const c2 = addOverlayControls(hud, 'co_hud', 'co_pos_hud');
-    makeDraggable(hud, 'co_pos_hud', c2.handle);
-    restorePos('co_pos_hud', hud);
-
-    updateHUDVisibility();
     updateToolsMenuLabels();
   }
 
-  function divider(){
+  // Collapsed: the bar shrinks to its + button (BAR_COLLAPSED, above).
+  function setCollapsed(on){
+    BAR_COLLAPSED = !!on;
+    try{ coSetValue('co_bar_collapsed', BAR_COLLAPSED); }catch(_){}
+    const b = $('#coBox'), m = $('#coMin');
+    if(b) b.dataset.collapsed = BAR_COLLAPSED ? '1' : '0';
+    if(m){
+      m.textContent = BAR_COLLAPSED ? '+' : '−';
+      m.title = BAR_COLLAPSED ? 'Show the exporter' : 'Collapse the exporter';
+    }
+    if(BAR_COLLAPSED) closeMenus();
+  }
+
+  function divider(strong){
     const d = document.createElement('div');
-    d.style.cssText = 'height:1px;background:#3a3a3a;margin:7px 4px';
+    d.style.cssText = strong ? 'height:2px;background:#4a4a4a;margin:9px 4px' : 'height:1px;background:#3a3a3a;margin:7px 4px';
     return d;
   }
 
@@ -610,27 +567,23 @@
     const om=$(other); if(om) om.style.display='none';
     if(menu.style.display==='block'){menu.style.display='none'; return;}
     menu.style.display='block';
+    placeMenu(menu, btn);
+  }
+
+  // Open above the button; re-run when the menu changes height (Debug ▸).
+  function placeMenu(menu, btn){
     const r=btn.getBoundingClientRect();
     const mw = menu.offsetWidth || 260;
-    menu.style.left = Math.max(8, Math.min((window.visualViewport?.width||window.innerWidth) - mw - 8, r.left + window.scrollX))+'px';
-    menu.style.top  = Math.max(8, r.top + window.scrollY - menu.offsetHeight - 8)+'px';
+    menu.style.left = Math.max(8, Math.min((window.visualViewport?.width||window.innerWidth) - mw - 8, r.left))+'px';
+    menu.style.top  = Math.max(8, r.top - menu.offsetHeight - 8)+'px';
   }
 
   function closeMenus(){ ['#coMenuExport','#coMenuTools'].forEach(s=>{const n=$(s); if(n) n.style.display='none';}); }
 
-  function hidePanel(h=true){
-    const b=$('#coBox'); const hUD=$('#coHUD');
-    if(b){ b.dataset.minimized = h ? '1' : '0'; b.style.display = h ? 'none' : ''; }
-    if(hUD){
-      hUD.dataset.minimized = h ? '1' : '0';
-      hUD.style.display = h ? 'none' : (HUD_ENABLED ? '' : 'none');
-    }
-    const t=$('#coTab'); if(t) t.style.display = h ? 'flex' : 'none';
-    closeMenus();
-  }
-
   function setStatus(t,c){ const s=$('#coStatus'); if(s){ s.className=c||'muted'; s.textContent=t; } }
+  let LAST_SPLIT = '0U/0A';
   function setCounts(split){
+    if(split!=null) LAST_SPLIT = split;
     const gg=getGroups(), groups=$('#coGroups'), msgs=$('#coMsgs'), role=$('#coSplit');
     if(groups) groups.textContent=String(gg.length);
     if(msgs) msgs.textContent=String(records.length);
@@ -682,23 +635,33 @@
   // ---------- help ----------
   function buildHelp(){
     const p=el('div',{id:'coHelp', class:'coFloating'});
-    p.innerHTML=`<header><b>CrushOn Exporter • Read Me</b><button id=coHelpClose>Close</button></header>
-      <div style="padding:12px 14px;font:13px/1.55 system-ui,-apple-system,Segoe UI,Roboto,Arial">
-        <p><b>Toggles:</b> PNG / JSONL / TXT pick what every export produces: <b>↓</b>, all branches, and all chats. They persist across reloads. In branch and bulk exports, TXT adds a readable transcript per branch and PNG adds the character card.</p>
-        <p><b>Regenerations as branches</b> (⚙, off by default): when off, a regenerated reply that nothing continues from is kept as a SillyTavern swipe on its branch instead of becoming its own branch file. Continued alternatives are always branches.</p>
-        <p><b>Skip "continue" messages</b> (⚙, on by default): your messages that only say "continue" (any case, with or without punctuation or asterisks) are left out of every export. The next message's parent ID points past them.</p>
-        <p><b>↓ Export:</b> Reads the branch shown on the page from CrushOn's message tree when it can be identified; otherwise tries a history request observed in this tab, then visible chat rows. When no history request is discoverable, the chat export may be partial. Unknown timestamps are left blank. Character lookup runs only when PNG is selected.</p>
-        <p><b>Formats:</b> .txt and .html carry [user]/[ai] labels; .jsonl imports back into SillyTavern; .png is a SillyTavern v2 card (JSON embedded in the avatar PNG). HTML recaptures the current chat automatically. Public/unlisted profiles and characters you own can export as PNG; private characters that aren't yours are blocked. If CrushOn returns no real definition, the .png is refused rather than saved with placeholder text. Creators who hide their definition export as description + greeting only, and the card says so.</p>
-        <p><b>ONE / ALL</b> (next to ↓): <b>ONE</b> (purple) = ↓ exports the branch on screen. <b>ALL</b> (red) = ↓ exports every branch of this chat as one .zip. The choice persists.</p>
-        <p><b>What gets exported:</b> <b>ONE + ↓</b> = this chat, the branch on screen. <b>ALL + ↓</b> = every branch of this chat. <b>⚙ → ALL chats</b> = every branch of every chat.</p>
-        <p><b>Export all branches:</b> ALL + ↓ (or ⚙ → separate files) reads CrushOn's full message tree (read-only) and saves one SillyTavern .jsonl per branch (root → leaf, original order and timestamps) plus manifest.json describing forks and shared ancestry. The .zip option is one download (best on phones); "separate files" saves each file individually. Missing or partial history is reported, never filled in.</p>
-        <p><b>Export ALL chats:</b> ⚙ → lists every chat in your Recent list and saves every branch of every chat into one .zip (a folder per character + manifest.json). Requests go one at a time about every 2 s; you can stop at any point and keep what was collected. Best on desktop: phones may run out of memory on large archives.</p>
-        <p><b>Restore missing pictures:</b> Enabled by default. Bypasses CrushOn's failing img.cocdn.co transformer for existing cdn.crushon.ai images, including lazy-loaded pictures. Switch it on/off from ⚙. This is a local display fix, not a re-upload.</p>
-        <p><b>⚙ More:</b> Status bar, image fix, regenerations, skip continue, HTML export, all branches as separate files, export all chats, manual calibration, clear, resize, read me, character data dump, history dump, hide panel.</p>
-        <p><b>Drag:</b> Grab the bar's background. Buttons still click normally.</p>
+    p.innerHTML=`<header><b>CrushOn Exporter • Read me</b><button id=coHelpClose>Close</button></header>
+      <div class="coHelpBody">
+        <h3>The bar</h3>
+        <p><b>PNG · JSONL · TXT</b> pick what gets saved: the character card, a SillyTavern chat file, a plain-text transcript. Green = on. They apply to every export and are remembered.</p>
+        <p><b>↓</b> exports. <b>ONE</b> (purple) saves the branch on screen. <b>ALL</b> (red) saves every branch of this chat as one .zip: a file per branch plus manifest.json.</p>
+        <p><b>⚙</b> opens the settings. <b>−</b> collapses the bar to a single <b>+</b> (remembered after reload).</p>
+        <p>Drag the bar by its background to move it.</p>
+
+        <h3>Export</h3>
+        <p><b>Master export: every chat (.zip)</b> saves every branch of every chat in your Recent list into one .zip, a folder per character. It asks CrushOn for one thing every ~2 s, so a big account takes several minutes. Keep the tab open. You can stop at any time and keep what was collected. Use a computer; phones can run out of memory.</p>
+        <p><b>HTML export (this chat)</b> saves the chat on screen as a styled page for offline reading.</p>
+
+        <h3>Options</h3>
+        <p><b>Skip "continue" messages</b> (on): your messages that only say "continue" are left out.</p>
+        <p><b>Keep regenerations</b> (off): CrushOn only shows the newest version of a regenerated reply, and so does the export. Turn this on to also keep the older versions, as swipes you can flip through in SillyTavern (.jsonl only).</p>
+        <p><b>Restore missing pictures</b> (on): shows character pictures CrushOn fails to load. Display only; nothing on your account changes.</p>
+
+        <h3>Debug</h3>
+        <p>For when CrushOn changes something and exports break. <b>Dump character data</b> and <b>Dump history response</b> save what CrushOn sent (it contains your chat text). <b>Calibrate speakers</b> redoes the you-or-the-bot check used when the exporter has to read the chat off the screen; it asks on its own when it needs to.</p>
+
+        <h3>Good to know</h3>
+        <p>Chats come from CrushOn's own message history. If that's unavailable, ↓ falls back to what's on screen and says so. Long chats may then be cut short.</p>
+        <p>Every export says whether CrushOn returned the complete history. Missing messages are reported, never made up. Unknown times are left blank.</p>
+        <p>PNG works for public and unlisted characters and your own. Private characters belonging to someone else are blocked. If a creator hid the definition, the card has only the description and greeting, and says so.</p>
       </div>`;
-    p.querySelector('#coHelpClose').onclick=()=>{ unpinWindow('co_help', p); p.style.display='none'; };
-    const c=addOverlayControls(p, 'co_help', 'co_pos_help'); makeDraggable(p, 'co_pos_help', c.handle);
+    p.querySelector('#coHelpClose').onclick=()=>{ p.style.display='none'; };
+    makeDraggable(p, null, p.querySelector('header'));
     return p;
   }
 
@@ -715,15 +678,18 @@
     p.querySelector('#coPromptCancel').onclick=()=>hidePrompt();
     p.querySelector('#coPromptOK').onclick=()=>hidePrompt();
     p.querySelector('#coPromptExtra').onclick=()=>{};
-    const c=addOverlayControls(p,'co_prompt','co_pos_prompt'); makeDraggable(p,'co_pos_prompt', c.handle);
+    makeDraggable(p, null, p.querySelector('.title'));
     return p;
   }
 
+  // Opens centered. While it stays open (a multi-step export), it stays
+  // wherever you dragged it.
   function showPrompt(msg,opts={}){
     updatePrompt(msg,opts);
     const n=$('#coPrompt');
+    const wasOpen=n.style.display==='block';
     n.style.display='block';
-    restorePosOrCenter('co_pos_prompt', n);
+    if(wasOpen) ensureInViewport(n); else centerInViewport(n);
   }
 
   function updatePrompt(message,opts={}){
@@ -737,8 +703,6 @@
 
   function hidePrompt(){
     const n=$('#coPrompt');
-    savePos('co_pos_prompt', n);
-    unpinWindow('co_prompt', n);
     n.style.display='none';
   }
 
@@ -980,7 +944,7 @@
     const msg = [
       head,
       '',
-      `Chat log: ${nLog} messages (split ${$('#coSplit').textContent}; source: ${CAPTURE_SOURCE}).`,
+      `Chat log: ${nLog} messages (split ${LAST_SPLIT}; source: ${CAPTURE_SOURCE}).`,
       CAPTURE_NOTE,
       captureCharacterProfile ? charSummary() : 'Character profile: not requested.',
       '',
@@ -1247,7 +1211,7 @@
   // This section reads only. It never sends, edits, deletes or switches anything.
   const TREE_PROC = 'chat.getMessageHistory';
   const TREE_MAX_PAGES = 25;
-  const SCRIPT_VERSION = (()=>{ try{ return GM_info.script.version; }catch(_){ return '2.5.3'; } })();
+  const SCRIPT_VERSION = (()=>{ try{ return GM_info.script.version; }catch(_){ return '2.6.0'; } })();
 
   // ---- request pacing ----
   const PACE = { last:0, minGap:400, jitter:0, cancelled:false };
@@ -1442,11 +1406,12 @@
     unlisted.sort(byTime).forEach(id=>children.get(parentOf(id)).push(id));
     if(unlisted.length) warnings.push(`${unlisted.length} message(s) were not listed by their parent; appended in time order.`);
 
-    // Which children get their own branches. With regenerations off, an AI
-    // reply with siblings and no children of its own is a dead-end regeneration:
-    // it stays in `children` (so it is still written as a swipe) but gets no
-    // branch. If every sibling is such a dead end, the newest one is kept.
-    const includeRegens=opts.includeRegens ?? INCLUDE_REGENS;
+    // Which children get their own branches. An AI reply with siblings and no
+    // children of its own is a dead-end regeneration: it stays in `children`
+    // (Keep regenerations writes it as a swipe) but gets no branch. If every
+    // sibling is such a dead end, the newest one (what CrushOn shows) is kept.
+    // includeRegens:true walks every version; only used to match the page.
+    const includeRegens=opts.includeRegens===true;
     const walk=new Map(), folded=new Set();
     let foldedRegens=0;
     for(const [id,kids] of children){
@@ -1565,7 +1530,7 @@
   // carries it as a swipe: the one sharing the longest history with it.
   function renderedLeafFor(nodes, tree){
     const direct=renderedLeaf(nodes, tree.branches);
-    if(direct || tree.includeRegens || !tree.foldedRegens) return direct;
+    if(direct || !tree.foldedRegens) return direct;
     const full=analyzeTree(nodes, {includeRegens:true});
     const leaf=renderedLeaf(nodes, full.branches);
     return leaf ? closestBranch(tree, full.branches.find(b=>b.leaf===leaf).path)?.leaf ?? null : null;
@@ -1641,9 +1606,10 @@
     };
   }
 
-  // Regenerated character replies → standard SillyTavern swipes (all of them,
-  // whether or not they have their own branch).
+  // Keep regenerations: other versions of a character reply → standard
+  // SillyTavern swipes. Off: no swipes, just the reply in the conversation.
   function swipeFields(m, id, tree){
+    if(!KEEP_REGENS) return {};
     const nodes=tree.nodes;
     const sibs=m.parent!=null ? (tree.children.get(String(m.parent))||[]) : [];
     const aiSibs=sibs.filter(s=>treeRole(nodes.get(s))==='AI');
@@ -1698,7 +1664,7 @@
           fork_points:b.forkPoints,
           incomplete_ancestry:b.detachedRoot,
           truncated_tail:b.truncatedTail,
-          regens_as_branches:tree.includeRegens,
+          keep_regenerations:KEEP_REGENS,
           skip_continue:SKIP_CONTINUE,
           ...(branchComplete ? {} : {warnings:tree.warnings.concat(fetched.notes)})
         }
@@ -1771,8 +1737,8 @@
 
   function exportOptions(tree){
     return {
-      regens_as_branches:tree ? tree.includeRegens : INCLUDE_REGENS,
-      folded_regens:tree ? tree.foldedRegens : null,
+      keep_regenerations:KEEP_REGENS,
+      other_regenerations:tree ? tree.foldedRegens : null,
       skip_continue:SKIP_CONTINUE,
       formats:['jsonl','txt','png'].filter(k=>EXPORT_FORMATS[k])
     };
@@ -1990,7 +1956,7 @@
     return true;
   }
 
-  async function exportAllBranches(mode){
+  async function exportAllBranches(){
     closeMenus();
     if(noFormatPicked()) return false;
     showPrompt('Reading the full conversation tree…', {ok:false, cancel:false});
@@ -2030,38 +1996,22 @@
 
     const outputs=[];
     for(const f of files){
-      if(EXPORT_FORMATS.jsonl) outputs.push({name:f.name, data:f.data, mime:'application/x-ndjson;charset=utf-8'});
-      if(EXPORT_FORMATS.txt) outputs.push({name:f.txtName, data:f.txt, mime:'text/plain;charset=utf-8'});
+      if(EXPORT_FORMATS.jsonl) outputs.push({name:f.name, data:f.data});
+      if(EXPORT_FORMATS.txt) outputs.push({name:f.txtName, data:f.txt});
     }
-    if(card) outputs.push({name:card.name, data:card.data, mime:'image/png'});
+    if(card) outputs.push({name:card.name, data:card.data});
 
-    const stamp=ts();
-    const manifestText=JSON.stringify(manifest, null, 2);
-    const wasMulti=MULTI_DOWNLOAD;
-    try{
-      if(mode==='separate'){
-        MULTI_DOWNLOAD=true;
-        download(`${base} - ${safeFilePart(ctx.route.conversationId,'chat')} - manifest.json`, manifestText, 'application/json;charset=utf-8');
-        for(const o of outputs){
-          await sleep(350); // browsers throttle bursts of downloads
-          download(o.name, o.data, o.mime);
-        }
-      }else{
-        const folder=`${base} - ${safeFilePart(ctx.route.conversationId,'chat')}/`;
-        const zip=makeZip([{name:folder+'manifest.json', data:manifestText}]
-          .concat(outputs.map(o=>({name:folder+o.name, data:o.data}))));
-        download(`${base} - ${safeFilePart(ctx.route.conversationId,'chat')} - branches - ${stamp}.zip`, zip, 'application/zip');
-      }
-    }finally{
-      setTimeout(()=>{ MULTI_DOWNLOAD=wasMulti; }, 0);
-    }
+    const folder=`${base} - ${safeFilePart(ctx.route.conversationId,'chat')}/`;
+    const zip=makeZip([{name:folder+'manifest.json', data:JSON.stringify(manifest, null, 2)}]
+      .concat(outputs.map(o=>({name:folder+o.name, data:o.data}))));
+    download(`${base} - ${safeFilePart(ctx.route.conversationId,'chat')} - branches - ${ts()}.zip`, zip, 'application/zip');
 
     const kinds=[EXPORT_FORMATS.jsonl && '.jsonl', EXPORT_FORMATS.txt && '.txt'].filter(Boolean).join(' + ');
     const saved=(kinds ? `a ${kinds} per branch` : 'no chat files')+(card ? ', the character .png' : '')+' + manifest.json';
     const lines=[
       `Exported ${tree.branches.length} branch${tree.branches.length===1?'':'es'} (${manifest.counts.nodes} messages in the tree, ${tree.forks.length} fork point${tree.forks.length===1?'':'s'}).`,
-      mode==='separate' ? `Saved ${saved}, as separate files.` : `Saved one .zip: ${saved}.`,
-      tree.foldedRegens ? `${tree.foldedRegens} regenerated repl${tree.foldedRegens===1?'y':'ies'} kept as swipes, not branches (⚙ → Regenerations as branches).` : '',
+      `Saved one .zip: ${saved}.`,
+      tree.foldedRegens ? `${tree.foldedRegens} older regenerated repl${tree.foldedRegens===1?'y':'ies'} ${KEEP_REGENS ? 'kept as swipes' : 'left out (⚙ → Keep regenerations)'}.` : '',
       cardNote,
       manifest.capture.complete ? 'Coverage: CrushOn returned the complete tree.' : 'Coverage: INCOMPLETE. See the warnings below.',
       manifest.rendered_branch ? `The branch shown on this page is ${manifest.rendered_branch}.` : 'Could not tell which branch this page is showing.',
@@ -2215,7 +2165,7 @@
         character_id:chat.characterId, character_name:chat.characterName, chat_id:chat.conversationId,
         ...(chat.chatName ? {chat_name:chat.chatName} : {}),
         ok:true, messages:fetched.nodes.size, memory_messages:fetched.memory.length, branches:tree.branches.length, fork_points:tree.forks.length,
-        folded_regens:tree.foldedRegens,
+        other_regenerations:tree.foldedRegens,
         pages_fetched:fetched.pages, stopped_early:!!fetched.stoppedEarly,
         complete:fetched.complete && !tree.detached.length && !tree.missingChildren.size,
         warnings:tree.warnings.concat(fetched.notes)
@@ -2235,7 +2185,7 @@
       finished:!stopped,
       note:stopped ? 'Stopped by the user before every chat was exported; chats not listed under "chats" were not attempted.' : 'Every listed chat was attempted.',
       listing:{source:'character.queryRecentCharacters + chat.listConversations', characters:list.characters, chats_listed:list.chats.length, problems:list.problems},
-      options:{...exportOptions(null), folded_regens:foldedRegens},
+      options:{...exportOptions(null), other_regenerations:foldedRegens},
       totals:{chats_attempted:chatResults.length, chats_failed:failed.length, chats_incomplete:incomplete.length, files:manifestFiles.length,
         ...(EXPORT_FORMATS.png ? {cards:cards.filter(c=>c.ok).length} : {})},
       files:manifestFiles,
@@ -2259,7 +2209,7 @@
     download(root.slice(0,-1)+'.zip', zip, 'application/zip');
     const lines=[
       stopped ? `Stopped early. Saved what was collected (${chatResults.length} of ${list.chats.length} chats attempted).` : `Attempted all ${list.chats.length} chats.`,
-      foldedRegens ? `${foldedRegens} regenerated repl${foldedRegens===1?'y':'ies'} kept as swipes, not branches.` : '',
+      foldedRegens ? `${foldedRegens} older regenerated repl${foldedRegens===1?'y':'ies'} ${KEEP_REGENS ? 'kept as swipes' : 'left out'}.` : '',
       EXPORT_FORMATS.png ? `${cards.filter(c=>c.ok).length} of ${cards.length} character cards saved${cards.some(c=>!c.ok) ? '; see manifest.json → cards for the rest' : ''}.` : '',
       `${manifestFiles.length} branches across ${charFolder.size} characters, ${zip.size>=1048576 ? (Math.round(zip.size/1048576*10)/10)+' MB' : Math.max(1,Math.round(zip.size/1024))+' KB'}.`,
       incomplete.length ? `${incomplete.length} chat(s) came back incomplete; see manifest.json → chats.` : 'Every exported chat came back complete.',
@@ -2332,7 +2282,7 @@
         parent_branch_id:b.sharedPrefix?.branch_id ?? null,
         fork_index:forkIndexOf(b, fetched),
         fork_kind:b.forkKind, leaf_message_id:leaf, memory_messages:memoryRows(fetched).length,
-        regens_as_branches:tree.includeRegens, skip_continue:SKIP_CONTINUE,
+        keep_regenerations:KEEP_REGENS, skip_continue:SKIP_CONTINUE,
         ...(shownRegen ? {shown_regeneration:true} : {})
       },
       note:(complete ? 'Complete history for this branch from CrushOn\'s message tree.' : 'CrushOn\'s message tree was incomplete; older messages may be missing.')+branchNote
@@ -2775,7 +2725,7 @@
     if(EXPORT_SCOPE!=='all') return captureAndExport();
     const go = $('#coGo');
     if(go){ if(go.disabled) return; go.disabled = true; go.classList.add('busy'); }
-    try{ await exportAllBranches('zip'); }
+    try{ await exportAllBranches(); }
     finally{ if(go){ go.disabled = false; go.classList.remove('busy'); } }
   }
 
@@ -2903,6 +2853,9 @@
         lines.push(exportedChat
           ? `Exported current chat (${records.length} message${records.length===1?'':'s'}).`
           : 'Export complete.');
+        if(exportedChat && CAPTURE_SOURCE==='visible DOM'){
+          lines.push('⚠ Couldn\'t reach CrushOn\'s chat history, so this export only has the messages currently on screen.');
+        }
         if(exportedChat){
           lines.push(`Source: ${CAPTURE_SOURCE}`);
           lines.push(CAPTURE_NOTE);
