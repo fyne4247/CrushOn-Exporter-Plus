@@ -49,12 +49,13 @@ Install a userscript manager in a supported browser, then install the JavaScript
 **[`CrushOn-Exporter-Plus.user.js`](./CrushOn-Exporter-Plus.user.js)**
 
 - **Desktop Firefox:** Use a userscript manager such as Violentmonkey, then install or paste the contents of the `.user.js` file.
+- **Copy and paste into Violentmonkey:** Open [`CrushOn-Exporter-Plus.user.md`](./CrushOn-Exporter-Plus.user.md), a plain-text copy of the script, in any text editor and copy everything (⌘A / Ctrl+A, then copy). In Violentmonkey's dashboard, click **+** → **New**, select all of the placeholder template and replace it with the copied script, then **Save & Close**. To update, open the existing script in Violentmonkey, replace its contents the same way, and save.
 - **iPhone Safari:** Use a Safari userscript extension such as [Userscripts](https://github.com/quoid/userscripts) and enable it for `crushon.ai`. Save the script as a `.user.js` file in the extension's configured script directory.
 - **Other browsers:** A compatible userscript manager may work, but behavior depends on the browser and the manager's supported APIs.
 
 The script matches `https://crushon.ai/*` and `https://www.crushon.ai/*`. Reload CrushOn after installation.
 
-If you've received the source as a `.md` file, **the contents are JavaScript**. Save the source as a `.user.js` file before attempting to run it; the `.md` extension itself won't execute as a userscript.
+`CrushOn-Exporter-Plus.user.md` is the same script as `CrushOn-Exporter-Plus.user.js`, byte for byte: **the contents are JavaScript**, not Markdown. Paste it into your userscript manager or save it as a `.user.js` file. The `.md` extension itself won't run as a userscript. Both files are updated together.
 
 ## Usage
 
