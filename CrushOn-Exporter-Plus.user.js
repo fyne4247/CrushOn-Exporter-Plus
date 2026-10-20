@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CrushOn Exporter v2
 // @namespace    co-export-plus
-// @version      2.4.0
+// @version      2.5.0
 // @description  Export chats and SillyTavern cards, restore avatars, calibrate speakers, and safely export HTML.
 // @match        https://crushon.ai/*
 // @match        https://www.crushon.ai/*
@@ -192,6 +192,33 @@
     const btn=$('#coToggleHUD'); if(btn) btn.textContent = HUD_ENABLED ? 'Hide status bar' : 'Show status bar';
     const imgBtn=$('#coToggleImages');
     if(imgBtn) imgBtn.textContent = 'Restore missing pictures: ' + (IMAGE_FIX_ENABLED ? 'ON' : 'OFF');
+    const regBtn=$('#coToggleRegens');
+    if(regBtn) regBtn.textContent = 'Regenerations as branches: ' + (INCLUDE_REGENS ? 'ON' : 'OFF');
+    const contBtn=$('#coToggleContinue');
+    if(contBtn) contBtn.textContent = 'Skip "continue" messages: ' + (SKIP_CONTINUE ? 'ON' : 'OFF');
+  }
+
+  // ---------- export options ----------
+  // Off: a regenerated reply that nothing continues from is kept only as a
+  // SillyTavern swipe, not as its own branch file.
+  let INCLUDE_REGENS = (function(){ try{ return coGetValue('co_include_regens', false) === true; }catch(_){ return false; } })();
+  // On: user messages that only say "continue" are left out of every export.
+  let SKIP_CONTINUE = (function(){ try{ return coGetValue('co_skip_continue', true) !== false; }catch(_){ return true; } })();
+  function setIncludeRegens(on){
+    INCLUDE_REGENS=!!on;
+    try{ coSetValue('co_include_regens', INCLUDE_REGENS); }catch(_){}
+    updateToolsMenuLabels();
+  }
+  function setSkipContinue(on){
+    SKIP_CONTINUE=!!on;
+    try{ coSetValue('co_skip_continue', SKIP_CONTINUE); }catch(_){}
+    updateToolsMenuLabels();
+  }
+  // "continue", any case, optionally wrapped in */_/quotes/brackets and
+  // followed by . ! ? or … — and nothing else.
+  function isContinueText(s){
+    const t=String(s||'').replace(/[*_~`"'“”‘’()[\]]/g,'').replace(/[\s.!?…]+$/,'').trim().toLowerCase();
+    return t==='continue';
   }
   function updateHUDVisibility(){
     const hud=$('#coHUD'); const box=$('#coBox');
@@ -465,9 +492,22 @@
     btnImgToggle.textContent = 'Restore missing pictures: ' + (IMAGE_FIX_ENABLED ? 'ON' : 'OFF');
     btnImgToggle.onclick = ()=>setImageFixEnabled(!IMAGE_FIX_ENABLED);
 
+    const btnRegenToggle = document.createElement('button');
+    btnRegenToggle.id = 'coToggleRegens';
+    btnRegenToggle.title = 'Off: regenerated replies nothing continues from stay as swipes instead of separate branch files';
+    btnRegenToggle.onclick = ()=>setIncludeRegens(!INCLUDE_REGENS);
+
+    const btnContinueToggle = document.createElement('button');
+    btnContinueToggle.id = 'coToggleContinue';
+    btnContinueToggle.title = 'On: your messages that only say "continue" are left out of exports';
+    btnContinueToggle.onclick = ()=>setSkipContinue(!SKIP_CONTINUE);
+
     mExp.append(
       btnHudToggle,
       btnImgToggle,
+      btnRegenToggle,
+      btnContinueToggle,
+      divider(),
       mk('Export .html (bonus)', exportHTML),
       mk('This chat: all branches (.zip)', ()=>exportAllBranches('zip')),
       mk('This chat: all branches (separate files)', ()=>exportAllBranches('separate')),
@@ -616,14 +656,16 @@
     const p=el('div',{id:'coHelp', class:'coFloating'});
     p.innerHTML=`<header><b>CrushOn Exporter • Read Me</b><button id=coHelpClose>Close</button></header>
       <div style="padding:12px 14px;font:13px/1.55 system-ui,-apple-system,Segoe UI,Roboto,Arial">
-        <p><b>Toggles:</b> PNG / JSONL / TXT pick what the <b>↓</b> button produces. They persist across reloads.</p>
+        <p><b>Toggles:</b> PNG / JSONL / TXT pick what every export produces: <b>↓</b>, all branches, and all chats. They persist across reloads. In branch and bulk exports, TXT adds a readable transcript per branch and PNG adds the character card.</p>
+        <p><b>Regenerations as branches</b> (⚙, off by default): when off, a regenerated reply that nothing continues from is kept as a SillyTavern swipe on its branch instead of becoming its own branch file. Continued alternatives are always branches.</p>
+        <p><b>Skip "continue" messages</b> (⚙, on by default): your messages that only say "continue" (any case, with or without punctuation or asterisks) are left out of every export. The next message's parent ID points past them.</p>
         <p><b>↓ Export:</b> Reads the branch shown on the page from CrushOn's message tree when it can be identified; otherwise tries a history request observed in this tab, then visible chat rows. When no history request is discoverable, the chat export may be partial. Unknown timestamps are left blank. Character lookup runs only when PNG is selected.</p>
         <p><b>Formats:</b> .txt and .html carry [user]/[ai] labels; .jsonl imports back into SillyTavern; .png is a SillyTavern v2 card (JSON embedded in the avatar PNG). HTML recaptures the current chat automatically. Public/unlisted profiles and characters you own can export as PNG; private characters that aren't yours are blocked. If CrushOn returns no real definition, the .png is refused rather than saved with placeholder text. Creators who hide their definition export as description + greeting only, and the card says so.</p>
         <p><b>What gets exported:</b> <b>↓</b> = this chat, the branch on screen. <b>⚙ → This chat: all branches</b> = every branch of this chat. <b>⚙ → ALL chats</b> = every branch of every chat.</p>
         <p><b>Export all branches:</b> ⚙ → reads CrushOn's full message tree (read-only) and saves one SillyTavern .jsonl per branch (root → leaf, original order and timestamps) plus manifest.json describing forks and shared ancestry. The .zip option is one download (best on phones); "separate files" saves each file individually. Missing or partial history is reported, never filled in.</p>
         <p><b>Export ALL chats:</b> ⚙ → lists every chat in your Recent list and saves every branch of every chat into one .zip (a folder per character + manifest.json). Requests go one at a time about every 2 s; you can stop at any point and keep what was collected. Best on desktop: phones may run out of memory on large archives.</p>
         <p><b>Restore missing pictures:</b> Enabled by default. Bypasses CrushOn's failing img.cocdn.co transformer for existing cdn.crushon.ai images, including lazy-loaded pictures. Switch it on/off from ⚙. This is a local display fix, not a re-upload.</p>
-        <p><b>⚙ More:</b> Status bar, HTML export, export all branches, export all chats, manual calibration, clear, resize, read me, character data dump, history dump, hide panel.</p>
+        <p><b>⚙ More:</b> Status bar, image fix, regenerations, skip continue, HTML export, export all branches, export all chats, manual calibration, clear, resize, read me, character data dump, history dump, hide panel.</p>
         <p><b>Drag:</b> Grab the bar's background. Buttons still click normally.</p>
       </div>`;
     p.querySelector('#coHelpClose').onclick=()=>{ unpinWindow('co_help', p); p.style.display='none'; };
@@ -1176,7 +1218,7 @@
   // This section reads only. It never sends, edits, deletes or switches anything.
   const TREE_PROC = 'chat.getMessageHistory';
   const TREE_MAX_PAGES = 25;
-  const SCRIPT_VERSION = (()=>{ try{ return GM_info.script.version; }catch(_){ return '2.4.0'; } })();
+  const SCRIPT_VERSION = (()=>{ try{ return GM_info.script.version; }catch(_){ return '2.5.0'; } })();
 
   // ---- request pacing ----
   const PACE = { last:0, minGap:400, jitter:0, cancelled:false };
@@ -1315,9 +1357,14 @@
     return typeof m?.content==='string' ? m.content : apiMessageBody(m);
   }
 
+  // A user message that only says "continue" (when that option is on).
+  function isSkippedNode(m){
+    return SKIP_CONTINUE && treeRole(m)==='USER' && isContinueText(nodeText(m));
+  }
+
   // Empty system anchors (CrushOn's tree root) are structural, not messages.
   function isEmittedNode(m){
-    return !(treeRole(m)==='SYSTEM' && !String(nodeText(m)).trim());
+    return !(treeRole(m)==='SYSTEM' && !String(nodeText(m)).trim()) && !isSkippedNode(m);
   }
 
   function nodeTime(m){
@@ -1336,7 +1383,7 @@
   // Turn the raw node map into ordered branches. Child order follows the
   // server's `children` arrays (CrushOn's own order); a node's `parent` field is
   // treated as authoritative. Nothing is invented: gaps are reported as flags.
-  function analyzeTree(nodes){
+  function analyzeTree(nodes, opts={}){
     const warnings=[];
     const parentOf=id=>{
       const p=nodes.get(id)?.parent;
@@ -1368,6 +1415,24 @@
     unlisted.sort(byTime).forEach(id=>children.get(parentOf(id)).push(id));
     if(unlisted.length) warnings.push(`${unlisted.length} message(s) were not listed by their parent; appended in time order.`);
 
+    // Which children get their own branches. With regenerations off, an AI
+    // reply with siblings and no children of its own is a dead-end regeneration:
+    // it stays in `children` (so it is still written as a swipe) but gets no
+    // branch. If every sibling is such a dead end, the newest one is kept.
+    const includeRegens=opts.includeRegens ?? INCLUDE_REGENS;
+    const walk=new Map(), folded=new Set();
+    let foldedRegens=0;
+    for(const [id,kids] of children){
+      if(includeRegens || kids.length<2){ walk.set(id, kids); continue; }
+      const dead=kids.filter(c=>treeRole(nodes.get(c))==='AI' && !children.get(c).length && !missingChildren.has(c));
+      if(!dead.length){ walk.set(id, kids); continue; }
+      let keep=kids.filter(c=>!dead.includes(c));
+      if(!keep.length) keep=[dead.slice().sort(byTime).pop()];
+      foldedRegens+=kids.length-keep.length;
+      kids.forEach(c=>{ if(!keep.includes(c)) folded.add(c); });
+      walk.set(id, keep);
+    }
+
     const roots=[...nodes.keys()].filter(id=>parentOf(id)===null).sort(byTime);
     const detached=[...nodes.keys()].filter(id=>{ const p=parentOf(id); return p && !nodes.has(p); }).sort(byTime);
     if(detached.length) warnings.push(`${detached.length} message chain(s) reference a parent that CrushOn did not return; exported as detached branches flagged "incomplete_ancestry".`);
@@ -1382,32 +1447,32 @@
         if(visited.has(id)){ warnings.push(`Cycle or duplicate reference at message ${id}; skipped.`); continue; }
         visited.add(id);
         depth.set(id, path.length-1);
-        const kids=children.get(id).filter(c=>!visited.has(c));
+        const kids=walk.get(id).filter(c=>!visited.has(c));
         if(!kids.length){
           branches.push({
             leaf:id, path,
             detachedRoot:detached.includes(start),
-            truncatedTail:missingChildren.has(id) || (children.get(id).length>0)
+            truncatedTail:missingChildren.has(id) || (walk.get(id).length>0)
           });
           continue;
         }
         for(let i=kids.length-1;i>=0;i--) stack.push([kids[i], path.concat(kids[i])]);
       }
     }
-    const unreached=[...nodes.keys()].filter(id=>!visited.has(id));
+    const unreached=[...nodes.keys()].filter(id=>!visited.has(id) && !folded.has(id));
     if(unreached.length) warnings.push(`${unreached.length} message(s) could not be placed in the tree (cyclic references) and were left out.`);
     for(const [id,list] of missingChildren){
       warnings.push(`Message ${id} lists ${list.length} child message(s) that CrushOn did not return.`);
     }
 
-    const forks=[...nodes.keys()].filter(id=>visited.has(id) && children.get(id).length>1);
+    const forks=[...nodes.keys()].filter(id=>visited.has(id) && walk.get(id).length>1);
     const pad=Math.max(2, String(branches.length).length);
     branches.forEach((b,i)=>{
       b.number=i+1;
       b.id='branch-'+String(i+1).padStart(pad,'0');
       b.forkPoints=[];
       for(let k=0;k<b.path.length-1;k++){
-        const kids=children.get(b.path[k]);
+        const kids=walk.get(b.path[k]);
         if(kids.length>1){
           b.forkPoints.push({message_id:b.path[k], depth:k, choice:kids.indexOf(b.path[k+1])+1, of:kids.length, chosen_message_id:b.path[k+1], kind:altKind(nodes.get(b.path[k+1]))});
         }
@@ -1442,7 +1507,7 @@
       if(t!==null && (!newest || t>newest.t)) newest={b, t};
     }
 
-    return {branches, forks, roots, detached, children, depth, nodeBranches, missingChildren, warnings, newestLeaf:newest?.b.leaf ?? null};
+    return {nodes, branches, forks, roots, detached, children, walk, folded, foldedRegens, includeRegens, depth, nodeBranches, missingChildren, warnings, newestLeaf:newest?.b.leaf ?? null};
   }
 
   // Which branch is the page showing? Compares rendered message text with each
@@ -1468,6 +1533,27 @@
     return top.leaf;
   }
 
+  // With regens off, the page may be showing a regeneration that has no branch
+  // of its own. Match against the full tree, then return the branch that
+  // carries it as a swipe: the one sharing the longest history with it.
+  function renderedLeafFor(nodes, tree){
+    const direct=renderedLeaf(nodes, tree.branches);
+    if(direct || tree.includeRegens || !tree.foldedRegens) return direct;
+    const full=analyzeTree(nodes, {includeRegens:true});
+    const leaf=renderedLeaf(nodes, full.branches);
+    return leaf ? closestBranch(tree, full.branches.find(b=>b.leaf===leaf).path)?.leaf ?? null : null;
+  }
+
+  function closestBranch(tree, path){
+    let best=null, bestN=-1;
+    for(const b of tree.branches){
+      let n=0;
+      while(n<b.path.length && n<path.length && b.path[n]===path[n]) n++;
+      if(n>bestN){ best=b; bestN=n; }
+    }
+    return best;
+  }
+
   function exportAIName(){
     const n=currentAIName();
     if(n && n!=='AI') return n;
@@ -1485,21 +1571,36 @@
   // the tree (no parent links, all stamped at the chat's creation). They are the
   // context the chat started from, so every branch file opens with them.
   function memoryRows(fetched){
-    return (fetched.memory||[]).filter(m=>m && typeof m==='object').map(m=>({id:String(m.id ?? ''), m}));
+    return (fetched.memory||[]).filter(m=>m && typeof m==='object' && !isSkippedNode(m)).map(m=>({id:String(m.id ?? ''), m}));
   }
   function forkIndexOf(b, fetched){
     return b.sharedPrefix ? memoryRows(fetched).length + b.sharedPrefix.jsonl_messages : null;
   }
 
+  // Nearest ancestor that is actually written out, stepping over skipped
+  // "continue" messages so parent_message_id never points at a missing line.
+  function emittedParent(m, tree){
+    const up=x=>(x?.parent!=null && x.parent!=='') ? String(x.parent) : null;
+    let p=up(m);
+    const skipped=[];
+    while(p && tree?.nodes?.has(p) && isSkippedNode(tree.nodes.get(p))){
+      skipped.push(p);
+      p=up(tree.nodes.get(p));
+    }
+    return {id:p, skipped};
+  }
+
   // Per-message ERP/SillyTavern fields shared by every API-based export.
   function crushonMessageExtra(m, id, tree){
     const t=nodeTime(m);
+    const ep=emittedParent(m, tree);
     const sibs=m.parent!=null && tree ? tree.children.get(String(m.parent)) : null;
     const who=treeRole(m);
     const isGreeting=m.messageType===5 || m.messageType==='5';
     return {
       message_id:id,
-      parent_message_id:m.parent!=null && m.parent!=='' ? String(m.parent) : null,
+      parent_message_id:ep.id,
+      ...(ep.skipped.length ? {skipped_continue_ids:ep.skipped} : {}),
       created_at:isoOrBlank(t),
       time_source:t!==null ? 'server' : 'none',
       edited:m.isEdited===true,
@@ -1510,6 +1611,20 @@
       ...(tree && (tree.children.get(id)||[]).length>1 ? {branch_point:true} : {}),
       ...(who ? {} : {unknown_role:true}),
       ...(Array.isArray(m.extendedContents) && m.extendedContents.length ? {extended_contents:m.extendedContents.length} : {})
+    };
+  }
+
+  // Regenerated character replies → standard SillyTavern swipes (all of them,
+  // whether or not they have their own branch).
+  function swipeFields(m, id, tree){
+    const nodes=tree.nodes;
+    const sibs=m.parent!=null ? (tree.children.get(String(m.parent))||[]) : [];
+    const aiSibs=sibs.filter(s=>treeRole(nodes.get(s))==='AI');
+    if(treeRole(m)!=='AI' || aiSibs.length<2 || aiSibs.length!==sibs.length) return {};
+    return {
+      swipes:aiSibs.map(s=>String(nodeText(nodes.get(s))||'')),
+      swipe_id:aiSibs.indexOf(id),
+      swipe_info:aiSibs.map(s=>({send_date:isoOrBlank(nodeTime(nodes.get(s))), extra:{crushon:{message_id:s}}}))
     };
   }
 
@@ -1556,6 +1671,8 @@
           fork_points:b.forkPoints,
           incomplete_ancestry:b.detachedRoot,
           truncated_tail:b.truncatedTail,
+          regens_as_branches:tree.includeRegens,
+          skip_continue:SKIP_CONTINUE,
           ...(branchComplete ? {} : {warnings:tree.warnings.concat(fetched.notes)})
         }
       }
@@ -1595,21 +1712,54 @@
         mes:String(nodeText(m)||''),       // verbatim server text
         extra:{crushon:crushonMessageExtra(m, id, tree)}
       };
-      // Regenerated character replies → standard SillyTavern swipes.
-      const sibs=m.parent!=null ? (tree.children.get(String(m.parent))||[]) : [];
-      const aiSibs=sibs.filter(s=>treeRole(nodes.get(s))==='AI');
-      if(who==='AI' && aiSibs.length>1 && aiSibs.length===sibs.length){
-        row.swipes=aiSibs.map(s=>String(nodeText(nodes.get(s))||''));
-        row.swipe_id=aiSibs.indexOf(id);
-        row.swipe_info=aiSibs.map(s=>({send_date:isoOrBlank(nodeTime(nodes.get(s))), extra:{crushon:{message_id:s}}}));
-      }
+      Object.assign(row, swipeFields(m, id, tree));
       rows.push(row);
     }
-    return {text:rows.map(r=>JSON.stringify(r)).join('\n'), messages:rows.length-1, unknownRoles, complete:branchComplete};
+    return {text:rows.map(r=>JSON.stringify(r)).join('\n'), rows, messages:rows.length-1, unknownRoles, complete:branchComplete};
   }
 
-  function branchFileName(charName, chatId, branchId){
-    return `${safeFilePart(charName,'character')} - ${safeFilePart(chatId,'chat')} - ${branchId}.jsonl`;
+  // The same branch as a readable [user]/[ai] transcript (the ↓ .txt format).
+  function branchTxt(b, ctx, rows){
+    const meta=rows[0].chat_metadata, cr=meta.crushon;
+    const split=cr.parent_branch_id
+      ? `, splits from ${cr.parent_branch_id} at message ${cr.fork_index+1} (${cr.fork_kind})`
+      : '';
+    const lines=[
+      `# ${ctx.aiName} — ${ctx.chatName || ctx.route.conversationId} — ${b.id}`,
+      'URL: '+meta.source_url,
+      'AI: '+ctx.aiName,
+      'Exported: '+meta.exported_at,
+      'Source: '+meta.capture_source,
+      'Coverage: '+meta.capture_note,
+      `Branch: ${b.id} of ${cr.branch_count}${split}`,
+      ''
+    ];
+    for(const r of rows.slice(1)){
+      if(r.is_system) continue;
+      lines.push(`[${r.is_user ? 'user' : 'ai'}] `+r.mes);
+      lines.push('');
+    }
+    return lines.join('\n');
+  }
+
+  function exportOptions(tree){
+    return {
+      regens_as_branches:tree ? tree.includeRegens : INCLUDE_REGENS,
+      folded_regens:tree ? tree.foldedRegens : null,
+      skip_continue:SKIP_CONTINUE,
+      formats:['jsonl','txt','png'].filter(k=>EXPORT_FORMATS[k])
+    };
+  }
+
+  // Manifest path of a branch: the .jsonl when JSONL is on, else the .txt
+  // (null when neither was written).
+  function branchFileRefs(f, folder){
+    if(!EXPORT_FORMATS.jsonl) return {file:EXPORT_FORMATS.txt ? folder+f.txtName : null};
+    return {file:folder+f.name, ...(EXPORT_FORMATS.txt ? {txt_file:folder+f.txtName} : {})};
+  }
+
+  function branchFileName(charName, chatId, branchId, ext='jsonl'){
+    return `${safeFilePart(charName,'character')} - ${safeFilePart(chatId,'chat')} - ${branchId}.${ext}`;
   }
 
   // Build every branch file for one chat from an already-fetched tree.
@@ -1620,7 +1770,10 @@
       const j=branchJsonl(b, ctx);
       return {
         name:branchFileName(ctx.aiName, ctx.route.conversationId, b.id),
-        data:j.text, messages:j.messages, unknownRoles:j.unknownRoles, complete:j.complete, branch:b
+        data:j.text,
+        txtName:branchFileName(ctx.aiName, ctx.route.conversationId, b.id, 'txt'),
+        txt:EXPORT_FORMATS.txt ? branchTxt(b, ctx, j.rows) : null,
+        messages:j.messages, unknownRoles:j.unknownRoles, complete:j.complete, branch:b
       };
     });
     return {tree, files, ctx};
@@ -1628,7 +1781,7 @@
 
   function chatManifestEntries(files, ctx, folder){
     return files.map(f=>({
-      file:folder+f.name,
+      ...branchFileRefs(f, folder),
       character_id:ctx.route.characterId,
       character_name:ctx.aiName,
       chat_id:ctx.route.conversationId,
@@ -1677,6 +1830,7 @@
       character_id:route.characterId,
       chat_id:route.conversationId,
       character_name:aiName,
+      options:exportOptions(tree),
       capture:{
         procedure:TREE_PROC,
         pages_fetched:fetched.pages,
@@ -1705,7 +1859,7 @@
       branches:tree.branches.map((b,i)=>({
         id:b.id,
         number:b.number,
-        file:files[i].name,
+        ...branchFileRefs(files[i], ''),
         messages:files[i].messages,
         complete:files[i].complete,
         leaf_message_id:b.leaf,
@@ -1795,15 +1949,23 @@
       aiName:exportAIName(),
       exportedAt:new Date().toISOString(),
       sourceUrl:`${location.origin}/character/${encodeURIComponent(route.characterId)}/chat/${encodeURIComponent(route.conversationId)}`,
-      renderedLeafId:renderedLeaf(fetched.nodes, pre.branches)
+      renderedLeafId:renderedLeafFor(fetched.nodes, pre)
     };
     const {tree, files, ctx}=buildChatBranchFiles(fetched, ctxBase);
     const manifest=buildBranchManifest(ctx, files);
     return {ok:true, ctx, tree, fetched, files, manifest, base:safeFilePart(ctx.aiName,'character')};
   }
 
+  function noFormatPicked(){
+    if(['jsonl','txt','png'].some(k=>EXPORT_FORMATS[k])) return false;
+    showPrompt('Pick at least one format — PNG, JSONL, or TXT — then try again.', {okText:'ok', cancel:false, onOK:hidePrompt});
+    setStatus('no format selected','warn');
+    return true;
+  }
+
   async function exportAllBranches(mode){
     closeMenus();
+    if(noFormatPicked()) return false;
     showPrompt('Reading the full conversation tree…', {ok:false, cancel:false});
     setStatus('reading conversation tree…','muted');
     let result;
@@ -1820,6 +1982,32 @@
     }
 
     const {files, manifest, base, tree, ctx}=result;
+
+    // Character card for this chat, when PNG is on.
+    let card=null, cardNote='';
+    if(EXPORT_FORMATS.png){
+      updatePrompt('Reading the character profile…', {ok:false, cancel:false});
+      CHAR=null;
+      await captureCharacter(s=>updatePrompt('Reading the character profile… ('+s+')', {ok:false, cancel:false}));
+      if(CHAR && CHAR.gate.allowed && CHAR.q.ok){
+        try{
+          const built=await characterPngBytes({c:CHAR.c, id:CHAR.id, source:CHAR.source}, ctx.aiName, true);
+          card={name:`${base}.png`, data:built.bytes};
+          manifest.card={file:card.name, ok:true, included:CHAR.q.filled};
+        }catch(e){ cardNote='PNG failed: '+(e?.message||e); }
+      }else{
+        cardNote='PNG skipped — '+(CHAR ? (CHAR.gate.allowed ? CHAR.q.why : CHAR.gate.why) : 'no character data on this page');
+      }
+      if(!card) manifest.card={file:null, ok:false, why:cardNote};
+    }
+
+    const outputs=[];
+    for(const f of files){
+      if(EXPORT_FORMATS.jsonl) outputs.push({name:f.name, data:f.data, mime:'application/x-ndjson;charset=utf-8'});
+      if(EXPORT_FORMATS.txt) outputs.push({name:f.txtName, data:f.txt, mime:'text/plain;charset=utf-8'});
+    }
+    if(card) outputs.push({name:card.name, data:card.data, mime:'image/png'});
+
     const stamp=ts();
     const manifestText=JSON.stringify(manifest, null, 2);
     const wasMulti=MULTI_DOWNLOAD;
@@ -1827,27 +2015,31 @@
       if(mode==='separate'){
         MULTI_DOWNLOAD=true;
         download(`${base} - ${safeFilePart(ctx.route.conversationId,'chat')} - manifest.json`, manifestText, 'application/json;charset=utf-8');
-        for(const f of files){
+        for(const o of outputs){
           await sleep(350); // browsers throttle bursts of downloads
-          download(f.name, f.data, 'application/x-ndjson;charset=utf-8');
+          download(o.name, o.data, o.mime);
         }
       }else{
         const folder=`${base} - ${safeFilePart(ctx.route.conversationId,'chat')}/`;
         const zip=makeZip([{name:folder+'manifest.json', data:manifestText}]
-          .concat(files.map(f=>({name:folder+f.name, data:f.data}))));
+          .concat(outputs.map(o=>({name:folder+o.name, data:o.data}))));
         download(`${base} - ${safeFilePart(ctx.route.conversationId,'chat')} - branches - ${stamp}.zip`, zip, 'application/zip');
       }
     }finally{
       setTimeout(()=>{ MULTI_DOWNLOAD=wasMulti; }, 0);
     }
 
+    const kinds=[EXPORT_FORMATS.jsonl && '.jsonl', EXPORT_FORMATS.txt && '.txt'].filter(Boolean).join(' + ');
+    const saved=(kinds ? `a ${kinds} per branch` : 'no chat files')+(card ? ', the character .png' : '')+' + manifest.json';
     const lines=[
       `Exported ${tree.branches.length} branch${tree.branches.length===1?'':'es'} (${manifest.counts.nodes} messages in the tree, ${tree.forks.length} fork point${tree.forks.length===1?'':'s'}).`,
-      mode==='separate' ? `Saved ${files.length} .jsonl files + a manifest.` : 'Saved one .zip with a .jsonl per branch + manifest.json.',
+      mode==='separate' ? `Saved ${saved}, as separate files.` : `Saved one .zip: ${saved}.`,
+      tree.foldedRegens ? `${tree.foldedRegens} regenerated repl${tree.foldedRegens===1?'y':'ies'} kept as swipes, not branches (⚙ → Regenerations as branches).` : '',
+      cardNote,
       manifest.capture.complete ? 'Coverage: CrushOn returned the complete tree.' : 'Coverage: INCOMPLETE. See the warnings below.',
       manifest.rendered_branch ? `The branch shown on this page is ${manifest.rendered_branch}.` : 'Could not tell which branch this page is showing.',
       ''
-    ];
+    ].filter((x,i,a)=>x!=='' || i===a.length-1);
     tree.branches.forEach((b,i)=>{
       const sp=b.sharedPrefix ? `, splits from ${b.sharedPrefix.branch_id} at message ${b.sharedPrefix.jsonl_messages+1} (${b.forkKind})` : '';
       lines.push(`• ${b.id}: ${files[i].messages} msgs${sp}${tree.newestLeaf===b.leaf?' (newest)':''}`);
@@ -1922,6 +2114,7 @@
 
   async function exportAllChats(){
     closeMenus();
+    if(noFormatPicked()) return false;
     PACE.cancelled=false;
     setPace(1500, 1000); // ≈1.5–2.5 s between requests, one at a time
     const cancelBtn={cancel:true, cancelText:'Stop', ok:false, onCancel:()=>{ PACE.cancelled=true; updatePrompt('Stopping after the current request…',{ok:false,cancel:false}); }};
@@ -1938,15 +2131,16 @@
     const go=await new Promise(resolve=>showPrompt(
       `Found ${list.chats.length} chats across ${list.characters} characters.\n\n`+
       `Downloading every branch of every chat takes about ${mins} minute${mins===1?'':'s'} (one request every ~2 s, so CrushOn isn't flooded). `+
+      (EXPORT_FORMATS.png ? 'PNG is on, so each character\'s card is looked up too, which adds a little time. ' : '')+
       'Keep this tab open. You can stop at any time and keep what has been collected.\n\nStart?',
       {okText:'Start', cancelText:'Cancel', onOK:()=>resolve(true), onCancel:()=>resolve(false)}));
     if(!go){ hidePrompt(); setStatus('bulk export cancelled','warn'); return false; }
 
     const exportedAt=new Date().toISOString();
     const root=`crushon-all-chats - ${ts()}/`;
-    const entries=[], manifestFiles=[], chatResults=[];
+    const entries=[], manifestFiles=[], chatResults=[], cards=[];
     const charFolder=new Map();
-    let done=0;
+    let done=0, foldedRegens=0;
     for(const chat of list.chats){
       if(PACE.cancelled) break;
       done++;
@@ -1965,6 +2159,17 @@
       }
       if(!charFolder.has(chat.characterId)){
         charFolder.set(chat.characterId, `${safeFilePart(chat.characterName,'character')} (${safeFilePart(chat.characterId.slice(0,8),'id')})/`);
+        if(EXPORT_FORMATS.png && !PACE.cancelled){
+          updatePrompt(`Exporting ${label}…\nReading ${chat.characterName}'s character card…`, cancelBtn);
+          const cardName=`${safeFilePart(chat.characterName,'character')}.png`;
+          let r;
+          try{ r=await characterPngById(chat.characterId, chat.characterName); }
+          catch(e){ r={ok:false, why:String(e?.message||e)}; }
+          if(r.ok) entries.push({name:root+charFolder.get(chat.characterId)+cardName, data:r.bytes});
+          cards.push({character_id:chat.characterId, character_name:chat.characterName,
+            file:r.ok ? charFolder.get(chat.characterId)+cardName : null, ok:r.ok,
+            ...(r.ok ? {included:r.filled} : {why:r.why})});
+        }
       }
       const folder=root+charFolder.get(chat.characterId);
       const route={characterId:chat.characterId, conversationId:chat.conversationId};
@@ -1973,12 +2178,17 @@
         sourceUrl:`${location.origin}/character/${encodeURIComponent(chat.characterId)}/chat/${encodeURIComponent(chat.conversationId)}`,
         renderedLeafId:null
       });
-      for(const f of files) entries.push({name:folder+f.name, data:f.data});
+      for(const f of files){
+        if(EXPORT_FORMATS.jsonl) entries.push({name:folder+f.name, data:f.data});
+        if(EXPORT_FORMATS.txt) entries.push({name:folder+f.txtName, data:f.txt});
+      }
+      foldedRegens+=tree.foldedRegens;
       manifestFiles.push(...chatManifestEntries(files, ctx, charFolder.get(chat.characterId)));
       chatResults.push({
         character_id:chat.characterId, character_name:chat.characterName, chat_id:chat.conversationId,
         ...(chat.chatName ? {chat_name:chat.chatName} : {}),
         ok:true, messages:fetched.nodes.size, memory_messages:fetched.memory.length, branches:tree.branches.length, fork_points:tree.forks.length,
+        folded_regens:tree.foldedRegens,
         pages_fetched:fetched.pages, stopped_early:!!fetched.stoppedEarly,
         complete:fetched.complete && !tree.detached.length && !tree.missingChildren.size,
         warnings:tree.warnings.concat(fetched.notes)
@@ -1998,8 +2208,11 @@
       finished:!stopped,
       note:stopped ? 'Stopped by the user before every chat was exported; chats not listed under "chats" were not attempted.' : 'Every listed chat was attempted.',
       listing:{source:'character.queryRecentCharacters + chat.listConversations', characters:list.characters, chats_listed:list.chats.length, problems:list.problems},
-      totals:{chats_attempted:chatResults.length, chats_failed:failed.length, chats_incomplete:incomplete.length, files:manifestFiles.length},
+      options:{...exportOptions(null), folded_regens:foldedRegens},
+      totals:{chats_attempted:chatResults.length, chats_failed:failed.length, chats_incomplete:incomplete.length, files:manifestFiles.length,
+        ...(EXPORT_FORMATS.png ? {cards:cards.filter(c=>c.ok).length} : {})},
       files:manifestFiles,
+      ...(EXPORT_FORMATS.png ? {cards} : {}),
       chats:chatResults
     };
     if(!manifestFiles.length){
@@ -2019,7 +2232,9 @@
     download(root.slice(0,-1)+'.zip', zip, 'application/zip');
     const lines=[
       stopped ? `Stopped early. Saved what was collected (${chatResults.length} of ${list.chats.length} chats attempted).` : `Attempted all ${list.chats.length} chats.`,
-      `${manifestFiles.length} branch files across ${charFolder.size} characters, ${zip.size>=1048576 ? (Math.round(zip.size/1048576*10)/10)+' MB' : Math.max(1,Math.round(zip.size/1024))+' KB'}.`,
+      foldedRegens ? `${foldedRegens} regenerated repl${foldedRegens===1?'y':'ies'} kept as swipes, not branches.` : '',
+      EXPORT_FORMATS.png ? `${cards.filter(c=>c.ok).length} of ${cards.length} character cards saved${cards.some(c=>!c.ok) ? '; see manifest.json → cards for the rest' : ''}.` : '',
+      `${manifestFiles.length} branches across ${charFolder.size} characters, ${zip.size>=1048576 ? (Math.round(zip.size/1048576*10)/10)+' MB' : Math.max(1,Math.round(zip.size/1024))+' KB'}.`,
       incomplete.length ? `${incomplete.length} chat(s) came back incomplete; see manifest.json → chats.` : 'Every exported chat came back complete.',
       failed.length ? `${failed.length} chat(s) failed; see manifest.json → chats.` : '',
       list.problems.length ? `${list.problems.length} listing note(s) in manifest.json → listing.problems.` : ''
@@ -2039,17 +2254,22 @@
     PACE.cancelled=false;
     const fetched=await fetchConversationTree(route.conversationId);
     if(!fetched.ok || !fetched.nodes.size) return {rows:null, note:''};
+    // Find what the page shows in the full tree (a regeneration may be on
+    // screen), but name branches as the branch exports do.
+    const full=analyzeTree(fetched.nodes, {includeRegens:true});
     const tree=analyzeTree(fetched.nodes);
     let leaf=null, why='';
-    if(tree.branches.length===1){ leaf=tree.branches[0].leaf; why='single-branch conversation'; }
+    if(full.branches.length===1){ leaf=full.branches[0].leaf; why='single-branch conversation'; }
     else{
-      leaf=renderedLeaf(fetched.nodes, tree.branches);
+      leaf=renderedLeaf(fetched.nodes, full.branches);
       why='branch matched to the messages rendered in the page';
     }
     if(!leaf){
       return {rows:null, note:`This conversation has ${tree.branches.length} branches and the visible one could not be identified; use ⚙ → This chat: all branches for the full tree.`};
     }
-    const b=tree.branches.find(x=>x.leaf===leaf);
+    const shown=full.branches.find(x=>x.leaf===leaf);
+    const b=tree.branches.find(x=>x.leaf===leaf) || closestBranch(tree, shown.path);
+    const shownRegen=b.leaf!==leaf;
     const rows=[];
     for(const {id, m} of memoryRows(fetched)){
       const who=treeRole(m);
@@ -2059,22 +2279,24 @@
       rows.push({id, seq:rows.length, who, raw:text, html:escapeHtml(text).replace(/\r?\n/g,'<br>'), t,
         crushon:{message_id:id||null, parent_message_id:null, created_at:isoOrBlank(t), time_source:t!==null?'server':'none', edited:m.isEdited===true, memory:true}});
     }
-    for(const id of b.path){
+    for(const id of shown.path){
       const m=fetched.nodes.get(id);
       const who=treeRole(m);
       if(who!=='USER' && who!=='AI') continue;
+      if(isSkippedNode(m)) continue;
       const text=String(nodeText(m)||'');
       rows.push({
         id, seq:rows.length, who, raw:text,
         html:escapeHtml(text).replace(/\r?\n/g,'<br>'),
         t:nodeTime(m),
-        crushon:crushonMessageExtra(m, id, tree)
+        crushon:crushonMessageExtra(m, id, tree),
+        swipe:swipeFields(m, id, tree)
       });
     }
     const complete=fetched.complete && !b.detachedRoot && !b.truncatedTail && !tree.missingChildren.size;
-    const branchNote=tree.branches.length>1
+    const branchNote=(tree.branches.length>1
       ? ` This is ${b.id} of ${tree.branches.length} (${why}); ⚙ → This chat: all branches saves the others.`
-      : '';
+      : '')+(shownRegen ? ` The page shows a regenerated reply; in branch exports it is a swipe on ${b.id}.` : '');
     return {
       rows,
       meta:{
@@ -2082,7 +2304,9 @@
         branch_id:b.id, branch_count:tree.branches.length,
         parent_branch_id:b.sharedPrefix?.branch_id ?? null,
         fork_index:forkIndexOf(b, fetched),
-        fork_kind:b.forkKind, leaf_message_id:b.leaf, memory_messages:memoryRows(fetched).length
+        fork_kind:b.forkKind, leaf_message_id:leaf, memory_messages:memoryRows(fetched).length,
+        regens_as_branches:tree.includeRegens, skip_continue:SKIP_CONTINUE,
+        ...(shownRegen ? {shown_regeneration:true} : {})
       },
       note:(complete ? 'Complete history for this branch from CrushOn\'s message tree.' : 'CrushOn\'s message tree was incomplete; older messages may be missing.')+branchNote
     };
@@ -2314,7 +2538,10 @@
   }
 
   function orderedRecords(){
-    const items=records.slice();
+    // Applies to the observed-request and on-screen captures too.
+    const items=SKIP_CONTINUE
+      ? records.filter(it=>!(it.who==='USER' && isContinueText(messageText(it))))
+      : records.slice();
     // Message-tree captures are already in parent→child order; keep it.
     if(CAPTURE_META.capture==='message_tree') return items;
     // Only timestamp-sort when *all* entries have authentic timestamps.
@@ -2763,6 +2990,7 @@
       const fromServer=CAPTURE_META.capture==='message_tree' || CAPTURE_META.capture==='observed_request';
 
       rows.push({
+        ...(it.swipe||{}),
         name:isUser ? userName : aiName,
         is_user:isUser,
         is_system:false,
@@ -4594,6 +4822,42 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
     return null;
   }
 
+  // SillyTavern v2 card PNG for a looked-up character ({c, id, source}).
+  // The page's og:image is only a valid avatar fallback for the character on
+  // screen. Returns {bytes, name}.
+  async function characterPngBytes(found, nameFallback, onScreen){
+    const card = buildV2Card(found.c, {id:found.id, source:found.source});
+    if(!card.name || card.name==='AI'){
+      card.name = card.data.name = nameFallback || 'Character';
+    }
+    const avatarUrl =
+      avatarUrlOf(found.c) ||
+      (onScreen ? document.querySelector('meta[property="og:image"]')?.content : '') ||
+      '';
+    let png;
+    try{
+      png = await blobToPngBytes(await getImageBlob(avatarUrl));
+    }catch(err){
+      png = await placeholderPngBytes(card.name);
+    }
+    return {bytes:embedCharaChunk(png, JSON.stringify(card)), name:card.name};
+  }
+
+  // Card for a character that isn't on screen (bulk export). Same access and
+  // quality gates as the ↓ PNG export. Returns {ok, bytes, name, filled} or {ok:false, why}.
+  async function characterPngById(characterId, nameFallback, onStep){
+    await paceWait();
+    const c = await trpcCharacterLookup(characterId, onStep);
+    if(!c) return {ok:false, why:'CrushOn returned no character data'};
+    const gate = await accessCheck(c);
+    if(!gate.allowed) return {ok:false, why:gate.why};
+    const source = 'trpc:' + (c.__procs || []).join('+');
+    const q = cardQuality(c, source);
+    if(!q.ok) return {ok:false, why:q.why};
+    const built = await characterPngBytes({c, id:characterId, source}, nameFallback, false);
+    return {ok:true, ...built, filled:q.filled};
+  }
+
   async function exportCharacterPNG(){
     closeMenus();
 
@@ -4698,26 +4962,9 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
         return false;
       }
 
-      const card = buildV2Card(
-        c,
-        {
-          id,
-          source
-        }
-      );
-
-      if(
-        !card.name ||
-        card.name==='AI'
-      ){
-        card.name =
-        card.data.name =
-          currentAIName();
-      }
-
       if(!LITE_BATCH){
         updatePrompt(
-          `Building card for “${card.name}” (${gate.why})…`,
+          `Building card (${gate.why})…`,
           {
             ok:false,
             cancel:false
@@ -4725,32 +4972,13 @@ article.msg .body img{max-width:100%;height:auto}pre,code{background:#0e0e0e;bor
         );
       }
 
-      let png;
-
-      const avatarUrl =
-        avatarUrlOf(c) ||
-        document.querySelector(
-          'meta[property="og:image"]'
-        )?.content ||
-        '';
-
-      try{
-        png = await blobToPngBytes(
-          await getImageBlob(
-            avatarUrl
-          )
-        );
-      }catch(err){
-        png =
-          await placeholderPngBytes(
-            card.name
-          );
-      }
-
-      const out = embedCharaChunk(
-        png,
-        JSON.stringify(card)
+      const built = await characterPngBytes(
+        {c, id, source},
+        currentAIName(),
+        true
       );
+      const card = {name:built.name};
+      const out = built.bytes;
 
       const safe =
         card.name
