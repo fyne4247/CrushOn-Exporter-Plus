@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CrushOn Exporter v2
 // @namespace    co-export-plus
-// @version      2.5.0
+// @version      2.5.1
 // @description  Export chats and SillyTavern cards, restore avatars, calibrate speakers, and safely export HTML.
 // @match        https://crushon.ai/*
 // @match        https://www.crushon.ai/*
@@ -55,6 +55,12 @@
   #coBox button.coGo{border-color:#2e7;background:linear-gradient(#1e5,#0a3);color:#fff;font-size:16px;font-weight:400;letter-spacing:0}
   #coBox button.coGo:hover{background:linear-gradient(#2f6,#1b4)}
   #coBox button.coGo.busy{background:linear-gradient(#a83,#640);border-color:#c95;color:#ffd}
+  #coBox button.coScope{font-size:10px}
+  #coBox button.coScope.one{border-color:#a6f;background:rgba(95,45,160,.65);color:#eadcff}
+  #coBox button.coScope.one:hover{background:rgba(115,60,190,.8)}
+  #coBox button.coScope.all{border-color:#f55;background:rgba(160,30,30,.65);color:#ffdede}
+  #coBox button.coScope.all:hover{background:rgba(190,40,40,.8)}
+  #coBox button#coCfg{font:22px/1 system-ui,-apple-system,"Segoe UI Symbol",sans-serif;color:#ddd}
 
   #coHUD{position:fixed;left:12px;bottom:12px;z-index:2147483647;background:#0f0f10;color:#e6e6e6;border:1px solid #333;border-radius:10px;padding:10px 12px;font:12px/1.4 monospace;min-width:320px;transform-origin:bottom left}
   #coHUD .ok{color:#7bff7b} #coHUD .warn{color:#ffd479} #coHUD .muted{opacity:.8}
@@ -412,6 +418,21 @@
     jsonl: (()=>{ try{ return coGetValue('co_fmt_jsonl', true); }catch(_){ return true; } })(),
     txt:   (()=>{ try{ return coGetValue('co_fmt_txt',   true); }catch(_){ return true; } })(),
   };
+  // ONE = ↓ exports the branch on screen; ALL = every branch of this chat.
+  let EXPORT_SCOPE = (()=>{ try{ return coGetValue('co_scope', 'one')==='all' ? 'all' : 'one'; }catch(_){ return 'one'; } })();
+  function setScope(scope){
+    EXPORT_SCOPE = scope==='all' ? 'all' : 'one';
+    try{ coSetValue('co_scope', EXPORT_SCOPE); }catch(_){}
+    const b = $('#coScope');
+    if(b){
+      b.textContent = EXPORT_SCOPE==='all' ? 'ALL' : 'ONE';
+      b.className = 'coScope '+EXPORT_SCOPE;
+      b.title = EXPORT_SCOPE==='all'
+        ? 'ALL: ↓ exports every branch of this chat (.zip). Click for ONE.'
+        : 'ONE: ↓ exports the branch on screen. Click for ALL.';
+    }
+  }
+
   function setFormat(key, on){
     EXPORT_FORMATS[key] = !!on;
     try{ coSetValue('co_fmt_'+key, EXPORT_FORMATS[key]); }catch(_){}
@@ -453,14 +474,18 @@
     const bGo = el('button',{id:'coGo',type:'button',title:'Capture and export selected formats'});
     bGo.className = 'coGo';
     bGo.textContent = '↓';
-    bGo.onclick = captureAndExport;
+    bGo.onclick = exportByScope;
+
+    const bScope = el('button',{id:'coScope',type:'button'});
+    bScope.onclick = ()=>setScope(EXPORT_SCOPE==='all' ? 'one' : 'all');
 
     const bCfg = el('button',{id:'coCfg',type:'button',title:'More tools'});
     bCfg.textContent = '⚙';
     bCfg.onclick = ()=>toggleMenu('export', bCfg);
 
-    bar.append(bPng, bJsonl, bTxt, bGo, bCfg);
+    bar.append(bPng, bJsonl, bTxt, bGo, bScope, bCfg);
     document.body.appendChild(bar);
+    setScope(EXPORT_SCOPE);
 
     // ---- HUD (unchanged, opt-in) ----
     const hud = el('div',{id:'coHUD'});
@@ -509,7 +534,6 @@
       btnContinueToggle,
       divider(),
       mk('Export .html (bonus)', exportHTML),
-      mk('This chat: all branches (.zip)', ()=>exportAllBranches('zip')),
       mk('This chat: all branches (separate files)', ()=>exportAllBranches('separate')),
       mk('ALL chats: every branch (.zip)', exportAllChats),
       divider(),
@@ -661,11 +685,12 @@
         <p><b>Skip "continue" messages</b> (⚙, on by default): your messages that only say "continue" (any case, with or without punctuation or asterisks) are left out of every export. The next message's parent ID points past them.</p>
         <p><b>↓ Export:</b> Reads the branch shown on the page from CrushOn's message tree when it can be identified; otherwise tries a history request observed in this tab, then visible chat rows. When no history request is discoverable, the chat export may be partial. Unknown timestamps are left blank. Character lookup runs only when PNG is selected.</p>
         <p><b>Formats:</b> .txt and .html carry [user]/[ai] labels; .jsonl imports back into SillyTavern; .png is a SillyTavern v2 card (JSON embedded in the avatar PNG). HTML recaptures the current chat automatically. Public/unlisted profiles and characters you own can export as PNG; private characters that aren't yours are blocked. If CrushOn returns no real definition, the .png is refused rather than saved with placeholder text. Creators who hide their definition export as description + greeting only, and the card says so.</p>
-        <p><b>What gets exported:</b> <b>↓</b> = this chat, the branch on screen. <b>⚙ → This chat: all branches</b> = every branch of this chat. <b>⚙ → ALL chats</b> = every branch of every chat.</p>
-        <p><b>Export all branches:</b> ⚙ → reads CrushOn's full message tree (read-only) and saves one SillyTavern .jsonl per branch (root → leaf, original order and timestamps) plus manifest.json describing forks and shared ancestry. The .zip option is one download (best on phones); "separate files" saves each file individually. Missing or partial history is reported, never filled in.</p>
+        <p><b>ONE / ALL</b> (next to ↓): <b>ONE</b> (purple) = ↓ exports the branch on screen. <b>ALL</b> (red) = ↓ exports every branch of this chat as one .zip. The choice persists.</p>
+        <p><b>What gets exported:</b> <b>ONE + ↓</b> = this chat, the branch on screen. <b>ALL + ↓</b> = every branch of this chat. <b>⚙ → ALL chats</b> = every branch of every chat.</p>
+        <p><b>Export all branches:</b> ALL + ↓ (or ⚙ → separate files) reads CrushOn's full message tree (read-only) and saves one SillyTavern .jsonl per branch (root → leaf, original order and timestamps) plus manifest.json describing forks and shared ancestry. The .zip option is one download (best on phones); "separate files" saves each file individually. Missing or partial history is reported, never filled in.</p>
         <p><b>Export ALL chats:</b> ⚙ → lists every chat in your Recent list and saves every branch of every chat into one .zip (a folder per character + manifest.json). Requests go one at a time about every 2 s; you can stop at any point and keep what was collected. Best on desktop: phones may run out of memory on large archives.</p>
         <p><b>Restore missing pictures:</b> Enabled by default. Bypasses CrushOn's failing img.cocdn.co transformer for existing cdn.crushon.ai images, including lazy-loaded pictures. Switch it on/off from ⚙. This is a local display fix, not a re-upload.</p>
-        <p><b>⚙ More:</b> Status bar, image fix, regenerations, skip continue, HTML export, export all branches, export all chats, manual calibration, clear, resize, read me, character data dump, history dump, hide panel.</p>
+        <p><b>⚙ More:</b> Status bar, image fix, regenerations, skip continue, HTML export, all branches as separate files, export all chats, manual calibration, clear, resize, read me, character data dump, history dump, hide panel.</p>
         <p><b>Drag:</b> Grab the bar's background. Buttons still click normally.</p>
       </div>`;
     p.querySelector('#coHelpClose').onclick=()=>{ unpinWindow('co_help', p); p.style.display='none'; };
@@ -1218,7 +1243,7 @@
   // This section reads only. It never sends, edits, deletes or switches anything.
   const TREE_PROC = 'chat.getMessageHistory';
   const TREE_MAX_PAGES = 25;
-  const SCRIPT_VERSION = (()=>{ try{ return GM_info.script.version; }catch(_){ return '2.5.0'; } })();
+  const SCRIPT_VERSION = (()=>{ try{ return GM_info.script.version; }catch(_){ return '2.5.1'; } })();
 
   // ---- request pacing ----
   const PACE = { last:0, minGap:400, jitter:0, cancelled:false };
@@ -2265,7 +2290,7 @@
       why='branch matched to the messages rendered in the page';
     }
     if(!leaf){
-      return {rows:null, note:`This conversation has ${tree.branches.length} branches and the visible one could not be identified; use ⚙ → This chat: all branches for the full tree.`};
+      return {rows:null, note:`This conversation has ${tree.branches.length} branches and the visible one could not be identified; switch ONE → ALL and press ↓ for the full tree.`};
     }
     const shown=full.branches.find(x=>x.leaf===leaf);
     const b=tree.branches.find(x=>x.leaf===leaf) || closestBranch(tree, shown.path);
@@ -2295,7 +2320,7 @@
     }
     const complete=fetched.complete && !b.detachedRoot && !b.truncatedTail && !tree.missingChildren.size;
     const branchNote=(tree.branches.length>1
-      ? ` This is ${b.id} of ${tree.branches.length} (${why}); ⚙ → This chat: all branches saves the others.`
+      ? ` This is ${b.id} of ${tree.branches.length} (${why}); switch ONE → ALL and press ↓ to save the others.`
       : '')+(shownRegen ? ` The page shows a regenerated reply; in branch exports it is a swipe on ${b.id}.` : '');
     return {
       rows,
@@ -2744,6 +2769,14 @@
   };
 
   // Unified capture + export triggered by the ↓ button.
+  async function exportByScope(){
+    if(EXPORT_SCOPE!=='all') return captureAndExport();
+    const go = $('#coGo');
+    if(go){ if(go.disabled) return; go.disabled = true; go.classList.add('busy'); }
+    try{ await exportAllBranches('zip'); }
+    finally{ if(go){ go.disabled = false; go.classList.remove('busy'); } }
+  }
+
   async function captureAndExport(){
     closeMenus();
 

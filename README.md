@@ -2,7 +2,7 @@
 
 A userscript for exporting [CrushOn.AI](https://crushon.ai/) conversations and characters, with SillyTavern-compatible output, better chat capture, and a workaround for broken character images.
 
-**Current version:** 2.5.0  
+**Current version:** 2.5.1  
 **Based on:** [CookieLoverAnon's CrushOnAI Chat Exporter](https://github.com/CookieLoverAnon/CrushOnAI-Chat-Exporter)
 
 > **Note:** This is an independently modified fork, not an official CrushOn.AI tool. CrushOn's site and APIs can change without notice. Some functions are best-effort and may require further updates.
@@ -15,7 +15,7 @@ A userscript for exporting [CrushOn.AI](https://crushon.ai/) conversations and c
 - **HTML:** Offline-friendly, dark-themed transcripts that preserve supported message formatting. Exported message HTML is sanitized to remove scripts, event handlers, and other unsafe embedded elements.
 - **SillyTavern JSONL:** Chat files in SillyTavern's JSON Lines format, with speaker roles and available original send times.
 - **History-aware capture:** Reads CrushOn's own message tree (`chat.getMessageHistory`, the call the chat page itself makes) and exports the branch shown on the page when it can be identified. Otherwise it tries a history request observed in the tab, then the messages rendered on the page. Exports disclose which source was used, whether the history is complete, and how many pages were fetched.
-- **Export all branches:** **⚙ → This chat: all branches** saves one SillyTavern `.jsonl` per branch (greeting → that branch's last message, including the history it shares with other branches) plus a `manifest.json` describing every fork, which branch each file splits from, and where. Regenerated replies are written as standard SillyTavern swipes. Available as one `.zip` (best on phones) or separate files.
+- **Export all branches:** switch the **ONE / ALL** button next to **↓** to **ALL** (red), then press **↓**. It saves one SillyTavern `.jsonl` per branch (greeting → that branch's last message, including the history it shares with other branches) plus a `manifest.json` describing every fork, which branch each file splits from, and where. Regenerated replies are written as standard SillyTavern swipes. Saved as one `.zip` (best on phones); **⚙ → This chat: all branches (separate files)** saves them individually instead.
 - **Export ALL chats:** **⚙ → ALL chats: every branch** lists every chat in your Recent list and saves every branch of every chat into one `.zip`: a folder per character plus a `manifest.json` with one entry per file (character, chat, branch, message count, completeness). Requests go one at a time, about every 2 seconds, with back-off if CrushOn asks to slow down. You can stop at any point and keep what was collected.
 - **Regenerations as branches (off by default):** With this off, a regenerated reply that nothing continues from stays a swipe on its branch instead of getting its own branch file. When every version of a reply is a dead end (e.g. the last message), the newest is the main reply. Alternatives you kept playing from are always branches. Toggle in **⚙**.
 - **Skip "continue" messages (on by default):** User messages that only say "continue" (any case, optionally with `.`, `!`, `…`, asterisks, quotes or brackets) are left out of every export. The following message's `parent_message_id` points to the nearest exported ancestor, and the skipped IDs are kept in `extra.crushon.skipped_continue_ids`. Toggle in **⚙**.
@@ -40,7 +40,7 @@ This only helps when the original image is still accessible. It cannot recover f
 
 ### Interface
 
-A compact draggable toolbar offers **PNG**, **JSONL**, and **TXT** output toggles, a **↓** export button, and a **⚙** settings menu. The settings menu also includes HTML export, the optional status bar, manual calibration, UI resizing, character-data diagnostics, and a hide-panel option. Preferences and panel placement are saved locally when the userscript environment permits it.
+A compact draggable toolbar offers **PNG**, **JSONL**, and **TXT** output toggles, a **↓** export button, a **ONE / ALL** scope switch (purple: the branch on screen; red: every branch of this chat), and a **⚙** settings menu. The settings menu also includes HTML export, the optional status bar, manual calibration, UI resizing, character-data diagnostics, and a hide-panel option. Preferences and panel placement are saved locally when the userscript environment permits it.
 
 ## Installation
 
@@ -59,7 +59,7 @@ The script matches `https://crushon.ai/*` and `https://www.crushon.ai/*`. Reload
 
 ## Usage
 
-**Scope at a glance:** **↓** exports the current chat (the branch on screen). **⚙ → This chat: all branches** exports every branch of the current chat. **⚙ → ALL chats: every branch** exports every chat.
+**Scope at a glance:** with **ONE** (purple) selected, **↓** exports the current chat (the branch on screen). With **ALL** (red), **↓** exports every branch of the current chat. The choice persists. **⚙ → ALL chats: every branch** exports every chat.
 
 1. Open a CrushOn conversation or character page.
 2. In the floating toolbar, select **TXT**, **JSONL**, and/or **PNG**. The selected formats persist between visits and apply to every export: **↓**, all branches, and all chats. In branch and bulk exports, TXT adds a readable `.txt` per branch and PNG adds the character card (one per chat, or one per character folder in the bulk export).
