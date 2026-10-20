@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CrushOn Exporter v2
 // @namespace    co-export-plus
-// @version      2.5.1
+// @version      2.5.2
 // @description  Export chats and SillyTavern cards, restore avatars, calibrate speakers, and safely export HTML.
 // @match        https://crushon.ai/*
 // @match        https://www.crushon.ai/*
@@ -1243,7 +1243,7 @@
   // This section reads only. It never sends, edits, deletes or switches anything.
   const TREE_PROC = 'chat.getMessageHistory';
   const TREE_MAX_PAGES = 25;
-  const SCRIPT_VERSION = (()=>{ try{ return GM_info.script.version; }catch(_){ return '2.5.1'; } })();
+  const SCRIPT_VERSION = (()=>{ try{ return GM_info.script.version; }catch(_){ return '2.5.2'; } })();
 
   // ---- request pacing ----
   const PACE = { last:0, minGap:400, jitter:0, cancelled:false };
@@ -1396,13 +1396,11 @@
     return parseMessageTime(m?.createdAt ?? m?.created_at ?? m?.timestamp ?? null);
   }
 
-  // Inferred from CrushOn's data: AI alternatives are regenerations; a user
-  // alternative flagged isEdited came from editing; otherwise "make branch".
+  // AI alternatives are regenerations; anything else is a branch. CrushOn's
+  // isEdited only means the text was changed later (it occurs on original and
+  // alternative replies alike), so it says nothing about how a fork was made.
   function altKind(m){
-    const who=treeRole(m);
-    if(who==='AI') return 'regen';
-    if(who==='USER') return m?.isEdited===true ? 'edit' : 'branch';
-    return 'branch';
+    return treeRole(m)==='AI' ? 'regen' : 'branch';
   }
 
   // Turn the raw node map into ordered branches. Child order follows the
@@ -1687,7 +1685,7 @@
           parent_branch_id:b.sharedPrefix?.branch_id ?? null,
           fork_index:forkIndexOf(b, fetched),
           fork_kind:b.forkKind,
-          fork_kind_basis:b.forkKind ? 'inferred: AI alternative = regen; user alternative with isEdited = edit; otherwise branch' : null,
+          fork_kind_basis:b.forkKind ? 'inferred: AI alternative = regen; otherwise branch' : null,
           divergence_message_id:b.sharedPrefix?.first_unique_message_id ?? null,
           leaf_message_id:b.leaf,
           memory_messages:memoryRows(fetched).length,

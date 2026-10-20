@@ -2,7 +2,7 @@
 
 A userscript for exporting [CrushOn.AI](https://crushon.ai/) conversations and characters, with SillyTavern-compatible output, better chat capture, and a workaround for broken character images.
 
-**Current version:** 2.5.1  
+**Current version:** 2.5.2  
 **Based on:** [CookieLoverAnon's CrushOnAI Chat Exporter](https://github.com/CookieLoverAnon/CrushOnAI-Chat-Exporter)
 
 > **Note:** This is an independently modified fork, not an official CrushOn.AI tool. CrushOn's site and APIs can change without notice. Some functions are best-effort and may require further updates.
@@ -92,7 +92,7 @@ The header line's `chat_metadata` keeps `source_url` (`/character/<id>/chat/<cha
 | `pages_fetched`, `stopped_early` | Pagination record. |
 | `branch_id`, `parent_branch_id` | This branch and the earlier branch it shares the longest history with. |
 | `fork_index` | 0-based index (among message lines) of the first message unique to this branch. |
-| `fork_kind` | `regen`, `edit`, or `branch`, inferred from CrushOn's data (AI alternative = regen; edited user alternative = edit; otherwise branch). With regenerations off, `regen` only appears on alternatives that were continued. |
+| `fork_kind` | `regen` or `branch`, inferred from CrushOn's data (AI alternative = regen; otherwise branch). CrushOn's edited flag is not used here: it marks text changed later, on original and alternative replies alike, and is reported per message as `edited`. With regenerations off, `regen` only appears on alternatives that were continued. |
 | `regens_as_branches`, `skip_continue` | The export options in effect. Manifests also record `options` (with `folded_regens`, the number of regenerations kept as swipes only). |
 
 Each message's `extra.crushon` has `message_id`, `parent_message_id`, `created_at`, `time_source` (`server`, `page`, or `none`), `edited`, and `greeting: true` on the opening message. With `message_id` and `parent_message_id` the tree can be rebuilt from any set of exports.
