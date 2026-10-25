@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CrushOn Exporter v2
 // @namespace    co-export-plus
-// @version      2.7.0
+// @version      2.7.1
 // @description  Export chats and SillyTavern cards, restore avatars, calibrate speakers, and safely export HTML.
 // @match        https://crushon.ai/*
 // @match        https://www.crushon.ai/*
@@ -200,6 +200,8 @@
     if(imgBtn) imgBtn.textContent = 'Restore missing pictures: ' + (IMAGE_FIX_ENABLED ? 'ON' : 'OFF');
     const regBtn=$('#coToggleRegens');
     if(regBtn) regBtn.textContent = 'Keep regenerations: ' + (KEEP_REGENS ? 'ON' : 'OFF');
+    const memBtn=$('#coToggleMemories');
+    if(memBtn) memBtn.textContent = 'Include memories in Master export: ' + (MASTER_MEMORIES ? 'ON' : 'OFF');
     const contBtn=$('#coToggleContinue');
     if(contBtn) contBtn.textContent = 'Skip "continue" messages: ' + (SKIP_CONTINUE ? 'ON' : 'OFF');
   }
@@ -211,6 +213,13 @@
   let KEEP_REGENS = (function(){ try{ return coGetValue('co_keep_regens', false) === true; }catch(_){ return false; } })();
   // On: user messages that only say "continue" are left out of every export.
   let SKIP_CONTINUE = (function(){ try{ return coGetValue('co_skip_continue', true) !== false; }catch(_){ return true; } })();
+  // On: Master export also saves your memories (Memories/ folder in the .zip).
+  let MASTER_MEMORIES = (function(){ try{ return coGetValue('co_master_memories', true) !== false; }catch(_){ return true; } })();
+  function setMasterMemories(on){
+    MASTER_MEMORIES=!!on;
+    try{ coSetValue('co_master_memories', MASTER_MEMORIES); }catch(_){}
+    updateToolsMenuLabels();
+  }
   function setKeepRegens(on){
     KEEP_REGENS=!!on;
     try{ coSetValue('co_keep_regens', KEEP_REGENS); }catch(_){}
@@ -507,9 +516,11 @@
 
     mExp.append(
       (()=>{ const b=mk('Master export: every chat (.zip)', exportAllChats); b.id='coMaster'; return b; })(),
+      mk('Memories only (.zip)', ()=>exportAllMemories()),
       mk('HTML export (this chat)', exportHTML),
       divider(true),
       head('OPTIONS'),
+      toggle('coToggleMemories', 'On: Master export also saves your memories, in a Memories/ folder beside Chats/', ()=>setMasterMemories(!MASTER_MEMORIES)),
       toggle('coToggleContinue', 'Leave out your messages that only say "continue"', ()=>setSkipContinue(!SKIP_CONTINUE)),
       toggle('coToggleRegens', 'Off: only the reply the chat continued from. On: the other versions too, as SillyTavern swipes in the .jsonl', ()=>setKeepRegens(!KEEP_REGENS)),
       toggle('coToggleImages', 'Show pictures CrushOn fails to load (display only)', ()=>setImageFixEnabled(!IMAGE_FIX_ENABLED)),
@@ -655,7 +666,7 @@
 
         <h3>Export</h3>
         <p><b>Memories:</b> on a memory's page (crushon.ai/memory/…), <b>↓</b> saves that memory. On your account page, <b>↓</b> saves all your memories (private, public and unlisted) as one .zip, a folder per character. CrushOn keeps at most 100 messages per memory; when it lists more for one (say 544), the rest isn't stored, so the file is marked incomplete and keeps CrushOn's summary of it.</p>
-        <p><b>Master export</b> saves every chat in your Recent list into one .zip, a folder per character: all branches of each chat with <b>ALL</b> selected, or just each chat's newest branch with <b>ONE</b>. The menu item ends in ONE or ALL to show which. Your memories are added in a memories/ folder. It asks CrushOn for one thing every ~2 s, so a big account takes several minutes. Keep the tab open. You can stop at any time and keep what was collected. Use a computer; phones can run out of memory.</p>
+        <p><b>Master export</b> saves every chat in your Recent list into one .zip, a folder per character: all branches of each chat with <b>ALL</b> selected, or just each chat's newest branch with <b>ONE</b>. The menu item ends in ONE or ALL to show which. Your memories are added in a Memories/ folder beside Chats/ (turn that off with ⚙ → Include memories in Master export, or save only memories with ⚙ → Memories only), and WARNINGS-AND-ERRORS.txt lists every chat or memory that failed or came back incomplete, and why. It asks CrushOn for one thing every ~2 s, so a big account takes several minutes. Keep the tab open. You can stop at any time and keep what was collected. Use a computer; phones can run out of memory.</p>
         <p><b>HTML export (this chat)</b> saves the chat on screen as a styled page for offline reading.</p>
 
         <h3>Options</h3>
@@ -1222,7 +1233,7 @@
   // This section reads only. It never sends, edits, deletes or switches anything.
   const TREE_PROC = 'chat.getMessageHistory';
   const TREE_MAX_PAGES = 25;
-  const SCRIPT_VERSION = (()=>{ try{ return GM_info.script.version; }catch(_){ return '2.7.0'; } })();
+  const SCRIPT_VERSION = (()=>{ try{ return GM_info.script.version; }catch(_){ return '2.7.1'; } })();
 
   // ---- request pacing ----
   const PACE = { last:0, minGap:400, jitter:0, cancelled:false };
@@ -2234,6 +2245,52 @@
     return {ok:true, characters:chars.length, chats, problems};
   }
 
+  // Plain-text list of everything in a Master export that failed or came back
+  // incomplete, with the reason. Always written, so its absence never means
+  // "nothing to report".
+  function buildIssuesReport({exportedAt, stopped, list, chatResults, cards, memoryPart}){
+    const L=[], who=r=>`${r.character_name||'(unknown character)'}${r.chat_name ? ` — "${r.chat_name}"` : ''} [chat ${r.chat_id}]`;
+    const isMemNote=w=>/^CrushOn returned \d+ "memory" message/.test(w);
+    const failed=chatResults.filter(r=>!r.ok), incomplete=chatResults.filter(r=>r.ok && r.complete===false);
+    const cardFails=cards.filter(c=>!c.ok);
+    const memFailed=(memoryPart?.memories||[]).filter(r=>!r.ok), memIncomplete=(memoryPart?.memories||[]).filter(r=>r.ok && !r.complete);
+    L.push('CrushOn Exporter — warnings and errors', `Exported ${exportedAt} (v${SCRIPT_VERSION})`, '');
+    if(stopped) L.push('STOPPED EARLY: the export was stopped before everything was attempted.', '');
+    L.push(`FAILED CHATS (${failed.length})`);
+    failed.forEach(r=>L.push(`- ${who(r)}`, `    ${r.error||'unknown error'}`));
+    L.push('', `INCOMPLETE CHATS (${incomplete.length})`);
+    incomplete.forEach(r=>{
+      L.push(`- ${who(r)}`);
+      const why=(r.warnings||[]).filter(w=>!isMemNote(w));
+      if(r.stopped_early) why.unshift('Stopped before every page of the chat was fetched.');
+      if(!why.length) why.push('CrushOn returned a chat tree with gaps; no further detail.');
+      why.forEach(w=>L.push(`    ${w}`));
+    });
+    if(cards.length){
+      L.push('', `CHARACTER CARDS NOT SAVED (${cardFails.length})`);
+      cardFails.forEach(c=>L.push(`- ${c.character_name} [${c.character_id}]: ${c.why||'unknown reason'}`));
+    }
+    if(memoryPart){
+      if(memoryPart.error){
+        L.push('', 'MEMORIES: could not be listed, so none were exported.', `    ${memoryPart.error}`);
+      }else{
+        L.push('', `FAILED MEMORIES (${memFailed.length})`);
+        memFailed.forEach(r=>L.push(`- ${r.character_name||'(unknown character)'} [memory ${r.memory_id}]`, `    ${r.error||'unknown error'}`));
+        L.push('', `INCOMPLETE MEMORIES (${memIncomplete.length})`);
+        memIncomplete.forEach(r=>L.push(`- ${r.character_name||'(unknown character)'} [memory ${r.memory_id}]`,
+          `    ${r.total_messages_reported!=null ? `CrushOn lists ${r.total_messages_reported} messages but only stores ${r.messages} (its limit is 100 per memory).` : `CrushOn returned ${r.messages} messages, fewer than it said the memory has.`}`));
+        (memoryPart.listing?.problems||[]).forEach(p=>L.push(`- listing (${p.visibility}): ${p.error||p.note}`));
+      }
+    }else{
+      L.push('', 'MEMORIES: not included in this export.');
+    }
+    if(list.problems?.length){
+      L.push('', `CHAT LISTING NOTES (${list.problems.length})`);
+      list.problems.forEach(p=>L.push(`- ${p.character_name||p.character_id||''}: ${p.note||p.error||JSON.stringify(p)}`));
+    }
+    return L.join('\n')+'\n';
+  }
+
   async function exportAllChats(){
     closeMenus();
     if(noFormatPicked()) return false;
@@ -2257,7 +2314,7 @@
         : 'Scope: ONE branch per chat, the newest (switch to ALL on the bar for every branch). ')+
       `It takes about ${mins} minute${mins===1?'':'s'} (one request every ~2 s, so CrushOn isn't flooded). `+
       (EXPORT_FORMATS.png ? 'PNG is on, so each character\'s card is looked up too, which adds a little time. ' : '')+
-      'Your memories are added too (a memories/ folder), which takes a few more minutes. '+
+      (MASTER_MEMORIES ? 'Your memories are added too (a Memories/ folder), which takes a few more minutes. ' : 'Memories are off (⚙ → Include memories in Master export). ')+
       'Keep this tab open. You can stop at any time and keep what has been collected.\n\nStart?',
       {okText:'Start', cancelText:'Cancel', onOK:()=>resolve(true), onCancel:()=>resolve(false)}));
     if(!go){ hidePrompt(); setStatus('bulk export cancelled','warn'); return false; }
@@ -2284,7 +2341,7 @@
         continue;
       }
       if(!charFolder.has(chat.characterId)){
-        charFolder.set(chat.characterId, `${safeFilePart(chat.characterName,'character')} (${safeFilePart(chat.characterId.slice(0,8),'id')})/`);
+        charFolder.set(chat.characterId, `Chats/${safeFilePart(chat.characterName,'character')} (${safeFilePart(chat.characterId.slice(0,8),'id')})/`);
         if(EXPORT_FORMATS.png && !PACE.cancelled){
           updatePrompt(`Exporting ${label}…\nReading ${chat.characterName}'s character card…`, cancelBtn);
           const cardName=`${safeFilePart(chat.characterName,'character')}.png`;
@@ -2327,15 +2384,15 @@
       fetched.nodes.clear(); // free memory as we go
     }
 
-    // Your memories go in the same archive, under memories/.
+    // Your memories go in the same archive, under Memories/ (chats are under Chats/).
     let memoryPart=null;
-    if(!PACE.cancelled){
+    if(!PACE.cancelled && MASTER_MEMORIES){
       updatePrompt('Listing your memories…', cancelBtn);
       const ml=await listOwnMemories(s=>updatePrompt(s, cancelBtn));
       if(ml.ok && ml.memories.length){
-        const got=await collectMemories(ml.memories, root+'memories/', entries, exportedAt, s=>updatePrompt(`Exporting ${s}…`, cancelBtn));
+        const got=await collectMemories(ml.memories, root+'Memories/', entries, exportedAt, s=>updatePrompt(`Exporting ${s}…`, cancelBtn));
         memoryPart=memoriesManifest(ml, got, exportedAt, PACE.cancelled);
-        entries.push({name:root+'memories/manifest.json', data:JSON.stringify(memoryPart,null,2)});
+        entries.push({name:root+'Memories/manifest.json', data:JSON.stringify(memoryPart,null,2)});
       }else if(!ml.ok && !ml.cancelled){
         memoryPart={error:ml.error};
       }
@@ -2356,7 +2413,7 @@
       totals:{chats_attempted:chatResults.length, chats_failed:failed.length, chats_incomplete:incomplete.length, files:manifestFiles.length,
         ...(EXPORT_FORMATS.png ? {cards:cards.filter(c=>c.ok).length} : {})},
       files:manifestFiles,
-      ...(memoryPart ? {memories:memoryPart.error ? {error:memoryPart.error} : {manifest:'memories/manifest.json', totals:memoryPart.totals, listing:memoryPart.listing.totals}} : {}),
+      ...(memoryPart ? {memories:memoryPart.error ? {error:memoryPart.error} : {manifest:'Memories/manifest.json', totals:memoryPart.totals, listing:memoryPart.listing.totals}} : {}),
       ...(EXPORT_FORMATS.png ? {cards} : {}),
       chats:chatResults
     };
@@ -2369,7 +2426,10 @@
     await sleep(50);
     let zip;
     try{
-      zip=makeZip([{name:root+'manifest.json', data:JSON.stringify(manifest,null,2)}].concat(entries));
+      zip=makeZip([
+        {name:root+'manifest.json', data:JSON.stringify(manifest,null,2)},
+        {name:root+'WARNINGS-AND-ERRORS.txt', data:buildIssuesReport({exportedAt, stopped, list, chatResults, cards, memoryPart})}
+      ].concat(entries));
     }catch(e){
       updatePrompt('Could not build the .zip: '+(e?.message||e), {okText:'ok', cancel:false, onOK:hidePrompt});
       return false;
@@ -2380,8 +2440,10 @@
       foldedRegens ? `${foldedRegens} older regenerated repl${foldedRegens===1?'y':'ies'} ${KEEP_REGENS ? 'kept as swipes' : 'left out'}.` : '',
       EXPORT_FORMATS.png ? `${cards.filter(c=>c.ok).length} of ${cards.length} character cards saved${cards.some(c=>!c.ok) ? '; see manifest.json → cards for the rest' : ''}.` : '',
       `${manifestFiles.length} branches across ${charFolder.size} characters, ${zip.size>=1048576 ? (Math.round(zip.size/1048576*10)/10)+' MB' : Math.max(1,Math.round(zip.size/1024))+' KB'}.`,
-      incomplete.length ? `${incomplete.length} chat(s) came back incomplete; see manifest.json → chats.` : 'Every exported chat came back complete.',
-      failed.length ? `${failed.length} chat(s) failed; see manifest.json → chats.` : '',
+      incomplete.length ? `${incomplete.length} chat(s) came back incomplete; see WARNINGS-AND-ERRORS.txt.` : 'Every exported chat came back complete.',
+      failed.length ? `${failed.length} chat(s) failed; see WARNINGS-AND-ERRORS.txt.` : '',
+      memoryPart && !memoryPart.error ? `${memoryPart.totals.files} of ${memoryPart.totals.attempted} memories saved${memoryPart.totals.failed||memoryPart.totals.incomplete ? `; ${memoryPart.totals.failed} failed, ${memoryPart.totals.incomplete} incomplete (see WARNINGS-AND-ERRORS.txt)` : ''}.` : '',
+      memoryPart?.error ? `Memories could not be listed (${memoryPart.error}); see WARNINGS-AND-ERRORS.txt.` : '',
       list.problems.length ? `${list.problems.length} listing note(s) in manifest.json → listing.problems.` : ''
     ].filter(Boolean);
     updatePrompt(lines.join('\n'), {okText:'ok', cancel:false, onOK:hidePrompt});
