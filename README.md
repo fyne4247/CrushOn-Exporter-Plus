@@ -1,147 +1,43 @@
-# CrushOn Exporter PLUS
+# CrushOn Exporter Plus
 
-A userscript for exporting [CrushOn.AI](https://crushon.ai/) conversations and characters, with SillyTavern-compatible output, better chat capture, and a workaround for broken character images.
+A userscript that backs up [CrushOn.AI](https://crushon.ai/) chats, memories, and character cards for offline reading or import into SillyTavern.
 
-**Current version:** 2.7.0  
-**Based on:** [CookieLoverAnon's CrushOnAI Chat Exporter](https://github.com/CookieLoverAnon/CrushOnAI-Chat-Exporter)
+## Install
 
-> **Note:** This is an independently modified fork, not an official CrushOn.AI tool. CrushOn's site and APIs can change without notice. Some functions are best-effort and may require further updates.
+Import [CrushOn-Exporter-Plus.user.js](./CrushOn-Exporter-Plus.user.js) into a userscript manager such as Violentmonkey, then reload CrushOn. To install manually, paste the script into a new userscript. To update, replace the contents of the existing entry and save.
 
-## Features
+On iPhone or iPad, use a Safari extension such as [Userscripts](https://github.com/quoid/userscripts). Enable it for CrushOn and save the `.user.js` file in the extension's script directory. Browser and download support vary.
 
-### Export conversations
+## Export chats
 
-- **TXT:** Readable plain-text transcripts with `[user]` and `[ai]` labels.
-- **HTML:** Offline-friendly, dark-themed transcripts that preserve supported message formatting. Exported message HTML is sanitized to remove scripts, event handlers, and other unsafe embedded elements.
-- **SillyTavern JSONL:** Chat files in SillyTavern's JSON Lines format, with speaker roles and available original send times.
-- **History-aware capture:** Reads CrushOn's own message tree (`chat.getMessageHistory`, the call the chat page itself makes) and exports the branch shown on the page when it can be identified. Otherwise it tries a history request observed in the tab, then the messages rendered on the page. Exports disclose which source was used, whether the history is complete, and how many pages were fetched.
-- **Export all branches:** switch the **ONE / ALL** button next to **↓** to **ALL** (red), then press **↓**. It saves one SillyTavern `.jsonl` per branch (greeting → that branch's last message, including the history it shares with other branches) plus a `manifest.json` describing every fork, which branch each file splits from, and where. Saved as one `.zip`.
-- **Master export:** **⚙ → Master export** lists every chat in your Recent list and saves them, plus all your memories (switch off with **⚙ → Include memories in Master export**), into one `.zip`. It follows the same switch: **ALL** saves every branch of every chat; **ONE** saves each chat's newest branch only. The menu item ends in **— ONE** or **— ALL** to show which. The archive has `Chats/` (a folder per character), `Memories/`, a `manifest.json` with one entry per file (character, chat, branch, message count, completeness), and `WARNINGS-AND-ERRORS.txt` listing every chat, card or memory that failed or came back incomplete, and why. **⚙ → Memories only (.zip)** saves just your memories from any page. Requests go one at a time, about every 2 seconds, with back-off if CrushOn asks to slow down. You can stop at any point and keep what was collected.
-- **Memories (automatic by page):** on a memory's page (`crushon.ai/memory/<id>`), **↓** saves that memory. On your **account page** (`crushon.ai/account`), **↓** saves every memory on your account (private, public and unlisted) as one `.zip`, a folder per character plus `manifest.json`. **Master export** adds them in a `Memories/` folder. Memory files are SillyTavern `.jsonl` like chats, with `chat_metadata.crushon.kind: "memory"`, `memory_id`, `memory_title`, `memory_visibility`, `memory_created_at` and `character_id`; `source_url` is the memory's own page (`/memory/<id>`), not a chat URL. Memory messages have no times, so `send_date` is empty.
-  - **The 100-message limit:** CrushOn saves at most 100 messages per memory (`memory.queryMaxMessagesCount`). Its list can show a much bigger number (`totalMemories`, e.g. 544 or 1,508); those earlier messages are not stored in the memory and no call returns them. Such files say `complete: false`, `saved_messages_complete: true`, `total_messages_reported`, `save_limit: 100`, and keep CrushOn's summary as `memory_summary`.
-  - **Memory messages inside chats:** a chat started from a memory shows that memory's messages at its top (the `memory: true` rows). They carry the same `message_id`s as the memory's own file, so the two link up.
-- **Keep regenerations (off by default):** CrushOn only shows the newest version of a regenerated reply, and by default that's all the export keeps: the reply the conversation continued from, or the newest one at a dead end. Turn this on to also keep the older versions as SillyTavern swipes in the `.jsonl` (the `.txt` always has just the reply in the conversation). A regenerated reply never gets its own branch file unless you continued the chat from it. Toggle in **⚙**.
-- **Skip "continue" messages (on by default):** User messages that only say "continue" (any case, optionally with `.`, `!`, `…`, asterisks, quotes or brackets) are left out of every export. The following message's `parent_message_id` points to the nearest exported ancestor, and the skipped IDs are kept in `extra.crushon.skipped_continue_ids`. Toggle in **⚙**.
-- **Debug tools:** **⚙ → Debug ▸** holds **Dump character data**, **Dump history response** (the raw `chat.getMessageHistory` response; it contains full message text) and **Calibrate speakers**, for when CrushOn changes something and exports break.
-- **Speaker identification:** Automatic calibration, plus manual speaker calibration when the page layout is ambiguous. A manually selected signature is used when classifying rendered messages.
+Open a character chat, select **TXT**, **JSONL**, and/or **PNG** in the floating toolbar, then press **↓**. A *storyline* is a separate chat with the same character.
 
-### Export characters
-
-- **SillyTavern V2 character cards:** Generates `.png` files with embedded character data, including any available description, personality, scenario, greeting, and example dialogue.
-- **Avatar handling:** Fetches the character image directly when possible, converts it to PNG, and uses a generated placeholder if the avatar cannot be retrieved.
-- **Profile lookup:** Tries CrushOn's existing character APIs, including an owner-specific lookup when authorized, rather than relying solely on visible page text.
-- **Visibility-aware:** Allows public and unlisted character exports, as well as characters belonging to your account. Private characters belonging to others are blocked. Unavailable or explicitly hidden definition fields are not fabricated.
-- **Data inspection:** **⚙ → Debug ▸ → Dump character data** saves what CrushOn returned, for troubleshooting.
-
-### Restore missing images
-
-The script works around a known kind of image-loading failure in which CrushOn's image-transforming proxy (`img.cocdn.co`) cannot serve an image that is still available from `cdn.crushon.ai`.
-
-It rewrites matching image URLs locally, including images loaded after scrolling or changing pages. The fix is **on by default** and can be toggled in **⚙ → Restore missing pictures**. It doesn't change, delete, or reupload images on your CrushOn account.
-
-This only helps when the original image is still accessible. It cannot recover files that are actually gone, nor can it fix unrelated image URLs.
-
-### Interface
-
-A compact draggable toolbar offers **PNG**, **JSONL**, and **TXT** output toggles, a **↓** export button, a **ONE / ALL** switch (purple: the branch on screen, and one branch per chat in Master export; red: every branch), a **⚙** settings menu, and **−** / **+** to collapse the bar to a single button (the collapsed state is remembered).
-
-The settings menu has three parts:
-
-- **Master export: every chat (.zip) — ONE / ALL** (the label follows the switch) and **HTML export (this chat)**.
-- **Options:** Skip "continue" messages, Keep regenerations, Restore missing pictures.
-- **Resize UI**, **Read me**, and **Debug ▸** (Dump character data, Dump history response, Calibrate speakers).
-
-Preferences and panel placement are saved locally when the userscript environment permits it.
-
-## Installation
-
-Install a userscript manager in a supported browser, then install the JavaScript userscript from this fork:
-
-**[`CrushOn-Exporter-Plus.user.js`](./CrushOn-Exporter-Plus.user.js)**
-
-- **Desktop Firefox:** Use a userscript manager such as Violentmonkey, then install or paste the contents of the `.user.js` file.
-- **Copy and paste into Violentmonkey:** Open [`CrushOn-Exporter-Plus.user.md`](./CrushOn-Exporter-Plus.user.md), a plain-text copy of the script, in any text editor and copy everything (⌘A / Ctrl+A, then copy). In Violentmonkey's dashboard, click **+** → **New**, select all of the placeholder template and replace it with the copied script, then **Save & Close**. To update, open the existing script in Violentmonkey, replace its contents the same way, and save.
-- **iPhone Safari:** Use a Safari userscript extension such as [Userscripts](https://github.com/quoid/userscripts) and enable it for `crushon.ai`. Save the script as a `.user.js` file in the extension's configured script directory.
-- **Other browsers:** A compatible userscript manager may work, but behavior depends on the browser and the manager's supported APIs.
-
-The script matches `https://crushon.ai/*` and `https://www.crushon.ai/*`. Reload CrushOn after installation.
-
-`CrushOn-Exporter-Plus.user.md` is the same script as `CrushOn-Exporter-Plus.user.js`, byte for byte: **the contents are JavaScript**, not Markdown. Paste it into your userscript manager or save it as a `.user.js` file. The `.md` extension itself won't run as a userscript. Both files are updated together.
-
-## Usage
-
-**Scope at a glance:** with **ONE** (purple) selected, **↓** exports the current chat's branch on screen, and **Master export** exports each chat's newest branch. With **ALL** (red), **↓** exports every branch of the current chat, and **Master export** every branch of every chat. The choice persists.
-
-1. Open a CrushOn conversation or character page.
-2. In the floating toolbar, select **TXT**, **JSONL**, and/or **PNG**. The selected formats persist between visits and apply to every export: **↓**, all branches, and all chats. In branch and bulk exports, TXT adds a readable `.txt` per branch and PNG adds the character card (one per chat, or one per character folder in the bulk export).
-3. Click **↓** to capture the current conversation and/or character, then export the selected formats.
-4. For an HTML transcript, open **⚙ → HTML export (this chat)**.
-5. If the exporter has to read the chat off the screen and can't tell your messages from the character's, it asks you to click one of each. If speakers still come out mislabeled, use **⚙ → Debug ▸ → Calibrate speakers**.
-6. If images are missing, check **⚙ → Restore missing pictures**; it is enabled by default.
-
-TXT and JSONL exports require chat messages. PNG export requires an accessible character record with usable data. On a character-only page, chat formats may be skipped; on a chat-only page, the character export may be unavailable.
-
-### Output formats
-
-| Format | Purpose | Notes |
+| Export | Include branches off (default) | Include branches on |
 | --- | --- | --- |
-| `.txt` | Readable conversation backup | Includes capture source and coverage note. |
-| `.html` | Styled offline reading | Message HTML is sanitized; linked external images may still require network access. |
-| `.jsonl` | SillyTavern chat import | Preserves genuine timestamps when available; leaves unknown times empty. API captures keep CrushOn's text verbatim. |
-| `.zip` | Branch / bulk archives | One `.jsonl` per branch + `manifest.json`. File names are deterministic: `<Character> - <chat id> - branch-NN.jsonl`. |
-| `.png` | SillyTavern V2 character card | Includes data actually accessible to your session; may contain a placeholder avatar. |
+| **ONE** | Visible branch of the open storyline | Every branch of the open storyline |
+| **ALL** | Newest branch of each storyline for this character | Every branch of each storyline for this character |
+| **⚙ → Master export** | Newest branch of each chat in your Recent list | Every branch of each chat in your Recent list |
 
-### JSONL metadata (optional extras, ignored by SillyTavern)
+**TXT** saves a readable transcript. **JSONL** saves a SillyTavern chat with original timestamps where available. **PNG** saves a SillyTavern V2 character card with the profile fields available to your account. Bulk ZIPs include one PNG per character when available and a `manifest.json` describing the export. **ALL** and **Master export** add `WARNINGS-AND-ERRORS.txt` when there are problems or the export stops early.
 
-The header line's `chat_metadata` keeps `source_url` (`/character/<id>/chat/<chat id>`) and `exported_at`, and adds `chat_metadata.crushon`:
+For a styled, sanitized transcript, use **⚙ → HTML export (this chat)**. Linked images may still require internet access.
 
-| Field | Meaning |
-| --- | --- |
-| `character_id`, `chat_id`, `exporter_version` | Identifiers. |
-| `capture` | `message_tree`, `observed_request`, or `visible_dom`. |
-| `complete` | `true` only when CrushOn's history ran to its end with no gaps. |
-| `pages_fetched`, `stopped_early` | Pagination record. |
-| `branch_id`, `parent_branch_id` | This branch and the earlier branch it shares the longest history with. |
-| `fork_index` | 0-based index (among message lines) of the first message unique to this branch. |
-| `fork_kind` | `regen` or `branch`, inferred from CrushOn's data (AI alternative = regen; otherwise branch). CrushOn's edited flag is not used here: it marks text changed later, on original and alternative replies alike, and is reported per message as `edited`. With regenerations off, `regen` only appears on alternatives that were continued. |
-| `keep_regenerations`, `skip_continue` | The export options in effect. Manifests also record `options`, including `other_regenerations`: how many older regenerated replies were left out, or kept as swipes. |
+## Settings and memories
 
-Each message's `extra.crushon` has `message_id`, `parent_message_id`, `created_at`, `time_source` (`server`, `page`, or `none`), `edited`, and `greeting: true` on the opening message. With `message_id` and `parent_message_id` the tree can be rebuilt from any set of exports.
+**Include branches** and **Keep regenerations** are independent. Regenerations are off by default. Turn them on to include older alternate replies as SillyTavern swipes in JSONL. An alternate reply can also be a branch if the chat continued from it.
 
-**Where a chat starts.** Exports follow the page's order:
+**Skip “continue” messages** and **Restore missing pictures** are on by default. The image fix uses the original image when CrushOn's image proxy fails and the original is still available.
 
-1. **Greeting:** when CrushOn's history has no greeting message, the page shows the character's greeting from the character record. The export does the same, marked `greeting: true, source: "character_greeting"` with no `message_id` and no time.
-2. **Memory (`memory: true`):** history CrushOn attaches to *every* chat with a character (`memoryMessages`) and shows at the top of each, after the greeting. Every chat with that character carries the same set, so the same messages (same `message_id`s) appear in each of its chats' files; dedupe by `message_id`. CrushOn gives them all one identical timestamp, so `send_date` is left empty, `time_source` is `none`, and that stamp is kept as `server_stamp`.
-3. **The message tree:** the branch itself, with full `message_id` / `parent_message_id` links.
+On a memory page, **↓** exports that memory. On your account page, **↓** exports all your memories as a ZIP. You can also use **⚙ → Memories only**. Master export includes memories by default, controlled by **Include memories in Master export**. CrushOn stores up to 100 messages per memory, even when its list shows a higher count.
 
-`fork_index` counts all of these lines.
+## Troubleshooting and privacy
 
-## Current limitations
+Check the export's source and coverage if messages are missing. The exporter uses CrushOn's history when available. **ONE** with branches off can fall back to the messages rendered on the page, which may be partial. Deleted messages and hidden profile fields are only exportable if CrushOn returns them to your session.
 
-- **History depends on CrushOn's API.** The message-tree call is undocumented and was verified in October 2026. If CrushOn changes it, the branch and bulk exports say so and download nothing, and the regular ↓ export falls back to the older methods. Each file's `complete` flag tells you whether the whole history came back.
-- **Only what CrushOn returns.** Branches hidden in the UI are included because the server returns them. Deleted messages, or anything the server does not send, cannot be recovered and are never invented.
-- **DOM fallback may be partial.** If history retrieval is unavailable, only rendered messages are captured. Emphasis is converted back to `*`/`**`, but paragraph spacing can differ slightly from the original text, and the page's "(edited)" label only appears on some edited messages.
-- **Chat id missing from the address.** CrushOn sometimes opens a chat at `/character/<id>/chat`. The exporter then uses the character's only chat, or the one whose messages match the page; if it can't tell, it says so instead of guessing.
-- **Which branch is "current" is a best guess.** CrushOn keeps the branch selection in the browser only. The exporter marks the branch whose messages match the page; if it can't tell, it says so.
-- **Bulk export covers your Recent chats list** (`character.queryRecentCharacters`). Group chats are not included. Large archives are built in memory, so use a desktop browser for the bulk export.
-- **Character definitions can be limited.** Information not supplied by CrushOn cannot be reconstructed. This includes fields hidden from the current account.
-- **Browser support varies.** Mobile userscript managers may not implement all `GM_*` APIs. In particular, character-avatar downloading and file saving can behave differently on iOS; a placeholder avatar or alternate download path may be used.
-- **Site changes can break selectors and API lookups.** A valid-looking download does not necessarily mean the entire conversation was captured; check its **Source** and **Coverage** note.
+If speakers are mislabeled, use **⚙ → Debug → Calibrate speakers**. Debug dumps can contain full conversations or character data. Exports are saved locally and may contain private information.
 
-## Privacy and access
+Master export covers your Recent list and skips group chats. Use a desktop browser for large archives. Bulk exports run requests sequentially, and you can stop and keep what was collected.
 
-The script runs in your browser using your existing CrushOn session. It does not require credentials to be entered into the script, and it does not operate a separate collection service. Its export and diagnostic features may retrieve data from CrushOn's own APIs and image-hosting services. **Exports are local files, but they can contain private conversations or character details, so handle them accordingly.**
+## Credits
 
-The character exporter does not bypass server-side access permissions. It does not create missing or restricted character definitions.
-
-## Attribution
-
-**Original work:** [CookieLoverAnon / CrushOnAI-Chat-Exporter](https://github.com/CookieLoverAnon/CrushOnAI-Chat-Exporter), which provided the foundation for chat capture, speaker calibration, and TXT/HTML export.
-
-**This fork:** Extends the original with SillyTavern chat and character-card output, API-assisted character and history retrieval, branch-tree and bulk exports, image restoration, expanded UI controls, export safety improvements, and additional compatibility handling.
-
-Please retain attribution to the original author when redistributing modifications. This README does not assert a license that the upstream repository has not explicitly provided.
-
-## Disclaimer
-
-This project is unofficial and is not affiliated with, endorsed by, or maintained by CrushOn.AI or SillyTavern. Use it only for data you are authorized to access, and follow applicable platform terms.
+An unofficial fork of [CookieLoverAnon's CrushOnAI Chat Exporter](https://github.com/CookieLoverAnon/CrushOnAI-Chat-Exporter). Retain the original attribution when redistributing modifications.
