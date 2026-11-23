@@ -22,6 +22,19 @@ Open a character chat, select **TXT**, **JSONL**, and/or **PNG** in the floating
 
 For a styled, sanitized transcript, use **⚙ → HTML export (this chat)**. Linked images may still require internet access.
 
+## Optional: send straight to SillyTavern
+
+[CrushOn-Exporter-Plus-D2ST.user.js](./CrushOn-Exporter-Plus-D2ST.user.js) is the same exporter with one addition: it can send cards and chats directly into a running SillyTavern instead of (or as well as) saving files. If you don't use SillyTavern, stay with the plain script above. Install one or the other, not both.
+
+In **⚙ → SILLYTAVERN**, set **Destination** (download only, SillyTavern only, or both), set **SillyTavern address** (default `http://127.0.0.1:8000`), and use **Test SillyTavern connection**. Then export as usual with **PNG** and **JSONL** on:
+
+- The card goes first. A character whose CrushOn ID is already on a card in SillyTavern is skipped, not duplicated.
+- Each chat is saved under that character with SillyTavern's own `Name - YYYY-MM-DD@HHhMMmSSsMMMms` naming. Branches become `... - Branch #n` chats linked to their parent. Sending the same export again adds nothing.
+- Your active SillyTavern persona name is used for your messages, and `{{user}}`/`{{char}}` are filled in.
+- Memories are not sent; they stay file-only.
+
+It uses SillyTavern's HTTP API through your userscript manager (tested design: Violentmonkey), so it needs `GM_xmlhttpRequest` and works wherever you can open SillyTavern's address from the same browser. SillyTavern with basic auth or user accounts is not supported yet.
+
 ## Settings and memories
 
 **Include branches** and **Keep regenerations** are independent. Regenerations are off by default. Turn them on to include older alternate replies as SillyTavern swipes in JSONL. An alternate reply can also be a branch if the chat continued from it.
