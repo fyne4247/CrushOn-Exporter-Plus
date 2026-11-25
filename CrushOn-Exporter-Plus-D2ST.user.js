@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CrushOn Exporter v2 (SillyTavern)
 // @namespace    co-export-plus-d2st
-// @version      2.7.4
+// @version      2.7.5
 // @description  CrushOn Exporter v2 plus direct-to-SillyTavern sending of cards and chats. Install this OR the plain exporter, not both.
 // @match        https://crushon.ai/*
 // @match        https://www.crushon.ai/*
@@ -702,6 +702,9 @@
     try{ coSetValue('co_scope', EXPORT_SCOPE); }catch(_){}
     updateScopeLabels();
   }
+  function isCharacterCardOnlyExport(){
+    return EXPORT_FORMATS.png && !EXPORT_FORMATS.jsonl && !EXPORT_FORMATS.txt && !!pageCharacterId();
+  }
   function updateScopeLabels(){
     const b = $('#coScope');
     if(b){
@@ -712,7 +715,8 @@
         : 'ONE: export the open storyline. Click for ALL.';
     }
     const go = $('#coGo');
-    if(go) go.title = (EXPORT_SCOPE==='all' ? 'Export all storylines for this character (.zip)'
+    if(go) go.title = (isCharacterCardOnlyExport() ? 'Export the character card (.png)'
+      : EXPORT_SCOPE==='all' ? 'Export all storylines for this character (.zip)'
       : INCLUDE_BRANCHES ? 'Export all branches of the open storyline (.zip)' : 'Export the visible chat');
     const master = $('#coMaster');
     if(master) master.textContent = 'Master export: every chat (.zip)';
@@ -723,6 +727,7 @@
     try{ coSetValue('co_fmt_'+key, EXPORT_FORMATS[key]); }catch(_){}
     const b = $('#coBtn_'+key);
     if(b) b.classList.toggle('on', EXPORT_FORMATS[key]);
+    updateScopeLabels();
   }
 
   // ---------- selectors ----------
@@ -946,7 +951,8 @@
       <div class="coHelpBody">
         <h3>The bar</h3>
         <p><b>PNG · JSONL · TXT</b> pick what gets saved: the character card, a SillyTavern chat file, a plain-text transcript. Green = on. They apply to every export and are remembered.</p>
-        <p><b>↓</b> exports. <b>ONE</b> saves the open storyline. <b>ALL</b> saves every storyline for this character in a .zip. With <b>Include branches</b> off, ONE saves the visible branch and ALL saves the newest branch of each storyline. Turn it on to save every branch of each selected storyline.</p>
+        <p>With only <b>PNG</b> selected on a character page, <b>↓</b> exports one character card with its JSON embedded. Chat and branch settings apply when you select <b>TXT</b> or <b>JSONL</b>.</p>
+        <p><b>ONE</b> saves the open storyline. <b>ALL</b> saves every storyline for this character in a .zip. With <b>Include branches</b> off, ONE saves the visible branch and ALL saves the newest branch of each storyline. Turn it on to save every branch of each selected storyline.</p>
         <p>Exports start where the page does: the character's greeting (when CrushOn adds it from the character), then the chat's older messages that CrushOn keeps outside the message tree, then the rest. Works with or without the chat id in the address.</p>
         <p><b>⚙</b> opens the settings. <b>−</b> collapses the bar to a single <b>+</b> (remembered after reload).</p>
         <p>Drag the bar by its background to move it.</p>
@@ -1520,7 +1526,7 @@
   // This section reads only. It never sends, edits, deletes or switches anything.
   const TREE_PROC = 'chat.getMessageHistory';
   const TREE_MAX_PAGES = 25;
-  const SCRIPT_VERSION = (()=>{ try{ return GM_info.script.version; }catch(_){ return '2.7.4'; } })();
+  const SCRIPT_VERSION = (()=>{ try{ return GM_info.script.version; }catch(_){ return '2.7.5'; } })();
 
   // ---- request pacing ----
   const PACE = { last:0, minGap:400, jitter:0, cancelled:false };
@@ -3613,7 +3619,10 @@
   // page exports all your memories, a chat exports ONE / ALL storylines.
   async function exportByScope(){
     const memoryHere=memoryRouteId(), accountHere=isAccountPage();
-    if(!memoryHere && !accountHere && EXPORT_SCOPE==='one' && !INCLUDE_BRANCHES) return captureAndExport();
+    if(!memoryHere && !accountHere){
+      // The card belongs to the character, so it needs no conversation lookup.
+      if(isCharacterCardOnlyExport() || (EXPORT_SCOPE==='one' && !INCLUDE_BRANCHES)) return captureAndExport();
+    }
     const go = $('#coGo');
     if(go){ if(go.disabled) return; go.disabled = true; go.classList.add('busy'); }
     try{

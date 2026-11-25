@@ -12,6 +12,10 @@ On iPhone or iPad, use a Safari extension such as [Userscripts](https://github.c
 
 Open a character chat, select **TXT**, **JSONL**, and/or **PNG** in the floating toolbar, then press **↓**. A *storyline* is a separate chat with the same character.
 
+For just the character card, select **PNG** alone and press **↓**. You get one `.png` with the SillyTavern character JSON embedded. This skips chat history in both **ONE** and **ALL**, even with **Include branches** on. A character chat address ending in `/chat?from=DETAIL` is enough.
+
+When you select **TXT** or **JSONL**, the chat settings apply.
+
 | Export | Include branches off (default) | Include branches on |
 | --- | --- | --- |
 | **ONE** | Visible branch of the open storyline | Every branch of the open storyline |
@@ -26,7 +30,7 @@ For a styled, sanitized transcript, use **⚙ → HTML export (this chat)**. Lin
 
 [CrushOn-Exporter-Plus-D2ST.user.js](./CrushOn-Exporter-Plus-D2ST.user.js) is the same exporter with one addition: it can send cards and chats directly into a running SillyTavern instead of (or as well as) saving files. If you don't use SillyTavern, stay with the plain script above. Install one or the other, not both.
 
-In **⚙ → SILLYTAVERN**, set **Destination** (download only, SillyTavern only, or both), set **SillyTavern address** (default `http://127.0.0.1:8000`), and use **Test SillyTavern connection**. Then export as usual with **PNG** and **JSONL** on:
+In **⚙ → SILLYTAVERN**, set **Destination** (download only, SillyTavern only, or both), set **SillyTavern address** (default `http://127.0.0.1:8000`), and use **Test SillyTavern connection**. Select **PNG** alone to send just the card to your chosen destination, or turn on **JSONL** as well to include chats.
 
 - The card goes first. A character whose CrushOn ID is already on a card in SillyTavern is skipped, not duplicated.
 - Each chat is saved under that character with SillyTavern's own `Name - YYYY-MM-DD@HHhMMmSSsMMMms` naming. Branches become `... - Branch #n` chats linked to their parent. Sending the same export again adds nothing.
